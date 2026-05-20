@@ -1,0 +1,152 @@
+# --- Secrets (CLAUDE.md: never push secrets) ---
+.env
+.env.local
+.env.*.local
+.env.production
+*.pem
+*.key
+*.crt
+*credentials*.json
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# Python tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+.turbo/
+.vercel/
+out/
+build/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnp.*
+.yarn/cache
+.yarn/install-state.gz
+
+# --- ML / Data artifacts ---
+# MLflow tracking (local) — remote tracking server is the source of truth
+mlruns/
+mlartifacts/
+mlflow.db
+
+# Large data files — never commit raw data
+data/raw/
+data/interim/
+data/processed/
+data/external/
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.npz
+# allow small test fixtures
+!tests/fixtures/**/*.parquet
+
+# Model artifacts (kept in MLflow, not git)
+*.pkl
+*.joblib
+*.cbm
+*.lgb
+*.bst
+*.onnx
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+
+# Prefect
+.prefect/
+prefect-results/
+
+# --- Infra / deploys ---
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl
+
+# Docker
+.docker/
+
+# --- IDE / editor ---
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.recommended.json
+.idea/
+*.swp
+*.swo
+*~
+.vim/
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# --- Misc ---
+*.log
+logs/
+tmp/
+temp/
+.cache/
