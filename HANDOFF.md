@@ -29,7 +29,7 @@ These files are **complete and authoritative**. Do not rewrite them; extend them
 - **Multi-agent at two layers**:
   - Dev-time: 5 subagents (already defined in `.claude/agents/`)
   - Runtime: Phase 6 chatbot is a multi-agent system (Orchestrator, Stats Analyst, Coach, Scout, Critic agents)
-- **Stack**: Python 3.11+, FastAPI, Postgres (Supabase), Prefect, MLflow, LightGBM, Next.js, Anthropic Claude API
+- **Stack**: Python 3.11+, FastAPI, Postgres (Supabase), Airflow, MLflow, LightGBM, Next.js, Anthropic Claude API
 - **Repo structure**: monorepo with `apps/`, `packages/`, `notebooks/`, `infra/` (see PROJECT_PLAN.md §6)
 
 ### Data
