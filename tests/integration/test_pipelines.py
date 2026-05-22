@@ -35,6 +35,11 @@ class TestPipelineImports:
 
         assert get_oauth_session is not None
 
+    def test_import_ingest_boxscores(self) -> None:
+        from packages.pipelines.ingest_boxscores import ingest_boxscores_dag
+
+        assert ingest_boxscores_dag is not None
+
 
 class TestDagRegistration:
     """Verify Airflow DAG objects have correct metadata."""
@@ -58,3 +63,8 @@ class TestDagRegistration:
         from packages.pipelines.seed_historical import seed_historical_dag
 
         assert seed_historical_dag.dag_id == "seed_historical"
+
+    def test_boxscores_dag_id(self) -> None:
+        from packages.pipelines.ingest_boxscores import ingest_boxscores_dag
+
+        assert ingest_boxscores_dag.dag_id == "ingest_boxscores"

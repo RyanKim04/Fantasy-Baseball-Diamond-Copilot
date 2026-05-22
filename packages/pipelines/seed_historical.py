@@ -1,20 +1,15 @@
 """Airflow DAG: one-time historical backfill of Statcast data (2018-2025).
 
 Designed to be run once during initial setup via manual trigger.
-Processes month-by-month to manage memory and provide progress tracking.
+Uses dynamic task mapping to process each year in parallel.
 Idempotent -- safe to re-run. Not scheduled (manual trigger only).
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta  # noqa: TCH003
 
 from airflow.sdk import dag, task
-
-if TYPE_CHECKING:
-    from packages.shared.schemas.pipeline import PipelineResult
-
 
 default_args = {
     "owner": "diamond-copilot",
@@ -31,20 +26,10 @@ default_args = {
     tags=["backfill", "statcast"],
     doc_md=__doc__,
 )
-def seed_historical(
-    start_year: int = 2018,
-    end_year: int = 2025,
-    start_month: int | None = None,
-) -> PipelineResult[dict[int, int]]:
-    """Backfill historical Statcast data for the specified year range.
+def seed_historical() -> None:
+    """Backfill historical Statcast data for 2018-2025.
 
-    Args:
-        start_year: First season to ingest (inclusive).
-        end_year: Last season to ingest (inclusive).
-        start_month: If provided, resume from this month in start_year.
-
-    Returns:
-        PipelineResult with data as a dict of {year: rows_upserted}.
+    Uses Airflow dynamic task mapping to process each year independently.
     """
 
     @task(retries=2, retry_delay=timedelta(minutes=2))
@@ -65,10 +50,9 @@ def seed_historical(
         """
         raise NotImplementedError("Task 0.9")
 
-    # Task wiring — delegate to seed_year tasks
-    # Note: year range is resolved at runtime, not DAG parse time.
-    # Individual years are triggered via Airflow params at run time.
-    seed_year(start_year)
+    # Task wiring -- dynamic task mapping over year range
+    years = list(range(2018, 2026))  # 2018 through 2025 inclusive
+    seed_year.expand(year=years)
 
 
 seed_historical_dag = seed_historical()

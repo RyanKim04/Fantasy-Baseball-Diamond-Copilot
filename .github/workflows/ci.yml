@@ -46,7 +46,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run unit tests
-        run: pytest tests/unit/ -v --tb=short
+        run: pytest tests/unit/ -v --tb=short --cov=packages/shared --cov-report=term-missing
 
   test-integration:
     name: Integration Tests
@@ -57,7 +57,7 @@ jobs:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: diamond
-          POSTGRES_PASSWORD: diamond_test
+          POSTGRES_PASSWORD: diamond_dev
           POSTGRES_DB: diamond_copilot_test
         ports:
           - 5432:5432
@@ -67,7 +67,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgresql://diamond:diamond_test@localhost:5432/diamond_copilot_test
+      DATABASE_URL: postgresql://diamond:diamond_dev@localhost:5432/diamond_copilot_test
     steps:
       - uses: actions/checkout@v4
 
@@ -80,8 +80,12 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run Alembic migrations
-        run: alembic upgrade head
-        continue-on-error: true  # migrations may not exist yet
+        run: |
+          if [ -d "infra/migrations/versions" ] && [ "$(ls -A infra/migrations/versions/*.py 2>/dev/null)" ]; then
+            alembic upgrade head
+          else
+            echo "No migrations found, skipping"
+          fi
 
       - name: Run integration tests
         run: pytest tests/integration/ -v --tb=short
@@ -98,7 +102,7 @@ jobs:
         continue-on-error: true  # Dockerfile may not exist yet
 
   # -----------------------------------------------------------------------
-  # DEPLOYMENT (dormant until Phase 4 — uncomment and configure when ready)
+  # DEPLOYMENT (dormant until Phase 4 -- uncomment and configure when ready)
   # -----------------------------------------------------------------------
   # deploy:
   #   name: Deploy to AWS ECS

@@ -7,13 +7,9 @@ Schedule: daily at 09:00 UTC.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from airflow.sdk import dag, task
-
-if TYPE_CHECKING:
-    from packages.shared.schemas.pipeline import PipelineResult
-
 
 default_args = {
     "owner": "diamond-copilot",
@@ -31,10 +27,11 @@ default_args = {
     tags=["ingestion", "yahoo"],
     doc_md=__doc__,
 )
-def ingest_yahoo(league_key: str | None = None) -> PipelineResult[int]:
+def ingest_yahoo(league_key: str | None = None) -> None:
     """Pull roster, scoring rules, and matchups from Yahoo Fantasy API.
 
     Idempotent via UPSERT on natural keys. Requires valid OAuth credentials.
+    The league_key should be provided via Airflow params or environment variable.
     """
 
     @task
@@ -54,8 +51,11 @@ def ingest_yahoo(league_key: str | None = None) -> PipelineResult[int]:
         raise NotImplementedError("Task 0.8")
 
     @task
-    def fetch_roster(session: Any, team_key: str) -> list[dict]:
+    def fetch_roster(session: Any, league_info: dict) -> list[dict]:
         """Fetch the current roster for a Yahoo fantasy team.
+
+        Extracts team_key from league_info at runtime (league_info contains
+        the user_team_key field from the league metadata response).
 
         Returns a list of dicts matching YahooRoster schema fields.
         """
@@ -93,7 +93,8 @@ def ingest_yahoo(league_key: str | None = None) -> PipelineResult[int]:
     # Task wiring
     session = refresh_oauth_token()
     league_info = fetch_league_info(session, league_key)
-    roster = fetch_roster(session, league_key)
+    # team_key is extracted from league_info at runtime inside fetch_roster
+    roster = fetch_roster(session, league_info)
     scoring = fetch_scoring_rules(session, league_key)
     matchups = fetch_matchups(session, league_key)
     upsert_yahoo_data(league_info, roster, scoring, matchups)

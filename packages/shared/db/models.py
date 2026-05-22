@@ -1,6 +1,6 @@
 """SQLAlchemy 2.0 declarative models for the Diamond Copilot database.
 
-All 10 tables for Phase 0. Every table has:
+All 12 tables for Phase 0. Every table has:
 - Appropriate primary key
 - created_at / updated_at timestamps with server defaults
 - Unique constraints for UPSERT idempotency
@@ -16,7 +16,6 @@ from sqlalchemy import (
     Integer,
     SmallInteger,
     String,
-    Text,
     UniqueConstraint,
     func,
 )
@@ -48,6 +47,7 @@ class Player(Base):
     active: Mapped[bool] = mapped_column(default=True)
     birth_date: Mapped[date | None] = mapped_column()
     mlb_debut_date: Mapped[date | None] = mapped_column()
+    yahoo_player_key: Mapped[str | None] = mapped_column(String(50))
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
@@ -66,6 +66,8 @@ class Game(Base):
     home_team: Mapped[str] = mapped_column(String(5))
     away_team: Mapped[str] = mapped_column(String(5))
     venue_name: Mapped[str | None] = mapped_column(String(200))
+    venue_id: Mapped[int | None] = mapped_column(Integer)
+    season_year: Mapped[int | None] = mapped_column(SmallInteger)
     status: Mapped[str | None] = mapped_column(String(30))  # scheduled, final, postponed, etc.
     home_score: Mapped[int | None] = mapped_column(SmallInteger)
     away_score: Mapped[int | None] = mapped_column(SmallInteger)
@@ -91,6 +93,8 @@ class Pitch(Base):
     __tablename__ = "pitches"
     __table_args__ = (
         UniqueConstraint("game_pk", "at_bat_number", "pitch_number", name="uq_pitch_event"),
+        Index("ix_pitch_pitcher_game", "pitcher_id", "game_pk"),
+        Index("ix_pitch_batter_game", "batter_id", "game_pk"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -99,24 +103,36 @@ class Pitch(Base):
     pitch_number: Mapped[int] = mapped_column(SmallInteger)
     batter_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.player_id"), index=True)
     pitcher_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.player_id"), index=True)
+    game_date: Mapped[date] = mapped_column(index=True)
     pitch_type: Mapped[str | None] = mapped_column(String(10))
     release_speed: Mapped[float | None] = mapped_column(Float)
     release_spin_rate: Mapped[float | None] = mapped_column(Float)
+    release_extension: Mapped[float | None] = mapped_column(Float)
+    pfx_x: Mapped[float | None] = mapped_column(Float)
+    pfx_z: Mapped[float | None] = mapped_column(Float)
     plate_x: Mapped[float | None] = mapped_column(Float)
     plate_z: Mapped[float | None] = mapped_column(Float)
     launch_speed: Mapped[float | None] = mapped_column(Float)  # exit velocity
     launch_angle: Mapped[float | None] = mapped_column(Float)
     hit_distance: Mapped[float | None] = mapped_column(Float)
+    barrel: Mapped[int | None] = mapped_column(SmallInteger)
     events: Mapped[str | None] = mapped_column(String(50))  # single, strikeout, etc.
     description: Mapped[str | None] = mapped_column(String(100))  # ball, called_strike, etc.
+    type: Mapped[str | None] = mapped_column(String(1))  # B, S, X
     zone: Mapped[int | None] = mapped_column(SmallInteger)
     stand: Mapped[str | None] = mapped_column(String(1))  # L, R
     p_throws: Mapped[str | None] = mapped_column(String(1))  # L, R
     inning: Mapped[int | None] = mapped_column(SmallInteger)
+    inning_topbot: Mapped[str | None] = mapped_column(String(3))  # Top, Bot
     outs_when_up: Mapped[int | None] = mapped_column(SmallInteger)
     balls: Mapped[int | None] = mapped_column(SmallInteger)
     strikes: Mapped[int | None] = mapped_column(SmallInteger)
+    on_1b: Mapped[int | None] = mapped_column(Integer)
+    on_2b: Mapped[int | None] = mapped_column(Integer)
+    on_3b: Mapped[int | None] = mapped_column(Integer)
     estimated_woba_using_speedangle: Mapped[float | None] = mapped_column(Float)
+    estimated_ba_using_speedangle: Mapped[float | None] = mapped_column(Float)
+    fielder_2: Mapped[int | None] = mapped_column(Integer)  # catcher player_id
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
@@ -138,6 +154,13 @@ class BattingStatsDaily(Base):
     player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.player_id"), index=True)
     game_pk: Mapped[int] = mapped_column(Integer, ForeignKey("games.game_pk"), index=True)
     game_date: Mapped[date] = mapped_column(index=True)
+    season_year: Mapped[int | None] = mapped_column(SmallInteger)
+    team_abbr: Mapped[str | None] = mapped_column(String(5))
+    is_home: Mapped[bool | None] = mapped_column()
+    batting_order_slot: Mapped[int | None] = mapped_column(SmallInteger)
+    opponent_pitcher_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("players.player_id")
+    )
 
     # Traditional counting stats
     pa: Mapped[int] = mapped_column(SmallInteger, default=0)
@@ -154,6 +177,7 @@ class BattingStatsDaily(Base):
     cs: Mapped[int] = mapped_column(SmallInteger, default=0)
     hbp: Mapped[int] = mapped_column(SmallInteger, default=0)
     sf: Mapped[int] = mapped_column(SmallInteger, default=0)
+    gidp: Mapped[int] = mapped_column(SmallInteger, default=0)
 
     # Statcast quality-of-contact
     exit_velocity_avg: Mapped[float | None] = mapped_column(Float)
@@ -184,6 +208,11 @@ class PitchingStatsDaily(Base):
     player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.player_id"), index=True)
     game_pk: Mapped[int] = mapped_column(Integer, ForeignKey("games.game_pk"), index=True)
     game_date: Mapped[date] = mapped_column(index=True)
+    season_year: Mapped[int | None] = mapped_column(SmallInteger)
+    team_abbr: Mapped[str | None] = mapped_column(String(5))
+    is_home: Mapped[bool | None] = mapped_column()
+    role_flag: Mapped[str | None] = mapped_column(String(2))  # SP, RP
+    opponent_team: Mapped[str | None] = mapped_column(String(5))
 
     # Traditional pitching stats
     ip: Mapped[float] = mapped_column(Float, default=0.0)  # innings pitched (e.g. 6.2)
@@ -195,6 +224,16 @@ class PitchingStatsDaily(Base):
     hr_allowed: Mapped[int] = mapped_column(SmallInteger, default=0)
     pitches_thrown: Mapped[int | None] = mapped_column(SmallInteger)
     batters_faced: Mapped[int | None] = mapped_column(SmallInteger)
+    hbp: Mapped[int] = mapped_column(SmallInteger, default=0)
+    wp: Mapped[int] = mapped_column(SmallInteger, default=0)
+
+    # Fantasy-relevant outcomes
+    wins: Mapped[int] = mapped_column(SmallInteger, default=0)
+    losses: Mapped[int] = mapped_column(SmallInteger, default=0)
+    saves: Mapped[int] = mapped_column(SmallInteger, default=0)
+    holds: Mapped[int] = mapped_column(SmallInteger, default=0)
+    blown_saves: Mapped[int] = mapped_column(SmallInteger, default=0)
+    quality_starts: Mapped[int] = mapped_column(SmallInteger, default=0)
 
     # Advanced / Statcast
     gb_pct: Mapped[float | None] = mapped_column(Float)
@@ -203,6 +242,130 @@ class PitchingStatsDaily(Base):
 
     # Fantasy points (null until scoring rules applied)
     fantasy_points: Mapped[float | None] = mapped_column(Float)
+
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Park Factors
+# ---------------------------------------------------------------------------
+class ParkFactor(Base):
+    """Ballpark factor adjustments by venue and season."""
+
+    __tablename__ = "park_factors"
+    __table_args__ = (UniqueConstraint("venue_id", "season_year", name="uq_park_venue_season"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    venue_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    venue_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    season_year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    park_factor_runs: Mapped[float | None] = mapped_column(Float)
+    park_factor_hr: Mapped[float | None] = mapped_column(Float)
+    park_factor_h: Mapped[float | None] = mapped_column(Float)
+    park_factor_2b: Mapped[float | None] = mapped_column(Float)
+    park_factor_3b: Mapped[float | None] = mapped_column(Float)
+    park_factor_bb: Mapped[float | None] = mapped_column(Float)
+    park_factor_so: Mapped[float | None] = mapped_column(Float)
+
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Season Stats Batting (FanGraphs / prior-season)
+# ---------------------------------------------------------------------------
+class SeasonStatsBatting(Base):
+    """Prior-season batting stats from FanGraphs or similar sources."""
+
+    __tablename__ = "season_stats_batting"
+    __table_args__ = (
+        UniqueConstraint("player_id", "season_year", "source", name="uq_season_batting"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.player_id"), index=True)
+    season_year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    source: Mapped[str] = mapped_column(String(20), default="fangraphs")
+
+    # Counting
+    pa: Mapped[int | None] = mapped_column(Integer)
+    ab: Mapped[int | None] = mapped_column(Integer)
+    g: Mapped[int | None] = mapped_column(Integer)
+
+    # Rate stats
+    avg: Mapped[float | None] = mapped_column(Float)
+    obp: Mapped[float | None] = mapped_column(Float)
+    slg: Mapped[float | None] = mapped_column(Float)
+    woba: Mapped[float | None] = mapped_column(Float)
+    wrc_plus: Mapped[float | None] = mapped_column(Float)
+    iso: Mapped[float | None] = mapped_column(Float)
+    babip: Mapped[float | None] = mapped_column(Float)
+    bb_pct: Mapped[float | None] = mapped_column(Float)
+    k_pct: Mapped[float | None] = mapped_column(Float)
+
+    # Statcast / expected
+    ev_avg: Mapped[float | None] = mapped_column(Float)
+    barrel_pct: Mapped[float | None] = mapped_column(Float)
+    hard_hit_pct: Mapped[float | None] = mapped_column(Float)
+    xwoba: Mapped[float | None] = mapped_column(Float)
+    xba: Mapped[float | None] = mapped_column(Float)
+    sprint_speed: Mapped[float | None] = mapped_column(Float)
+
+    # Baserunning
+    sb: Mapped[int | None] = mapped_column(Integer)
+    cs: Mapped[int | None] = mapped_column(Integer)
+
+    # Value
+    war: Mapped[float | None] = mapped_column(Float)
+
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Season Stats Pitching (FanGraphs / prior-season)
+# ---------------------------------------------------------------------------
+class SeasonStatsPitching(Base):
+    """Prior-season pitching stats from FanGraphs or similar sources."""
+
+    __tablename__ = "season_stats_pitching"
+    __table_args__ = (
+        UniqueConstraint("player_id", "season_year", "source", name="uq_season_pitching"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(Integer, ForeignKey("players.player_id"), index=True)
+    season_year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    source: Mapped[str] = mapped_column(String(20), default="fangraphs")
+
+    # Workload
+    ip: Mapped[float | None] = mapped_column(Float)
+    g: Mapped[int | None] = mapped_column(Integer)
+    gs: Mapped[int | None] = mapped_column(Integer)
+    batters_faced: Mapped[int | None] = mapped_column(Integer)
+
+    # Rate / advanced
+    era: Mapped[float | None] = mapped_column(Float)
+    fip: Mapped[float | None] = mapped_column(Float)
+    xfip: Mapped[float | None] = mapped_column(Float)
+    siera: Mapped[float | None] = mapped_column(Float)
+    k_pct: Mapped[float | None] = mapped_column(Float)
+    bb_pct: Mapped[float | None] = mapped_column(Float)
+    k_bb_pct: Mapped[float | None] = mapped_column(Float)
+    hr_per_9: Mapped[float | None] = mapped_column(Float)
+    gb_pct: Mapped[float | None] = mapped_column(Float)
+    whip: Mapped[float | None] = mapped_column(Float)
+
+    # Stuff / Statcast
+    avg_fastball_velo: Mapped[float | None] = mapped_column(Float)
+    xwoba_against: Mapped[float | None] = mapped_column(Float)
+    barrel_pct_against: Mapped[float | None] = mapped_column(Float)
+    hard_hit_pct_against: Mapped[float | None] = mapped_column(Float)
+    xera: Mapped[float | None] = mapped_column(Float)
+
+    # Value
+    war: Mapped[float | None] = mapped_column(Float)
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
@@ -291,30 +454,6 @@ class Prediction(Base):
     predicted_p10: Mapped[float | None] = mapped_column(Float)
     predicted_p90: Mapped[float | None] = mapped_column(Float)
     actual_points: Mapped[float | None] = mapped_column(Float)  # backfilled after game
-
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
-
-
-# ---------------------------------------------------------------------------
-# News Articles
-# ---------------------------------------------------------------------------
-class NewsArticle(Base):
-    """Scraped player news for RAG pipeline (Phase 6)."""
-
-    __tablename__ = "news_articles"
-    __table_args__ = (UniqueConstraint("source", "external_id", name="uq_news_source_id"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source: Mapped[str] = mapped_column(String(50))  # espn, rotowire, etc.
-    external_id: Mapped[str] = mapped_column(String(200))
-    player_id: Mapped[int | None] = mapped_column(
-        Integer, ForeignKey("players.player_id"), index=True
-    )
-    headline: Mapped[str | None] = mapped_column(String(500))
-    body: Mapped[str | None] = mapped_column(Text)
-    published_at: Mapped[datetime | None] = mapped_column()
-    url: Mapped[str | None] = mapped_column(String(500))
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

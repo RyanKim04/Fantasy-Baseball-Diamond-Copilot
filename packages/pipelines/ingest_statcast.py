@@ -1,7 +1,7 @@
 """Airflow DAG: ingest Statcast pitch-level data and aggregate to daily stats.
 
 Default behavior: pull last 2 days. Idempotent via UPSERT on natural keys.
-Schedule: daily at 06:00 UTC.
+Schedule: daily at 08:00 UTC (after mlb_schedule at 06:00 and boxscores at 07:00).
 """
 
 from __future__ import annotations
@@ -16,8 +16,6 @@ if TYPE_CHECKING:
 
     import pandas as pd
 
-    from packages.shared.schemas.pipeline import PipelineResult
-
 
 default_args = {
     "owner": "diamond-copilot",
@@ -28,7 +26,7 @@ default_args = {
 
 @dag(
     dag_id="ingest_statcast",
-    schedule="0 6 * * *",
+    schedule="0 8 * * *",
     start_date=datetime(2026, 1, 1),
     catchup=False,
     default_args=default_args,
@@ -38,7 +36,7 @@ default_args = {
 def ingest_statcast(
     start_date: date | None = None,
     end_date: date | None = None,
-) -> PipelineResult[int]:
+) -> None:
     """Pull Statcast pitch-level data and aggregate to daily batting/pitching stats.
 
     Default: last 2 days. Idempotent via UPSERT on natural keys.

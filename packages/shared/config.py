@@ -3,6 +3,7 @@
 Reads from .env file or environment variables. See .env.example for all fields.
 """
 
+from functools import lru_cache
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,7 +19,7 @@ class Settings(BaseSettings):
     )
 
     # --- Database ---
-    database_url: str = "postgresql://user:password@localhost:5432/diamond_copilot"
+    database_url: str = ""  # must be set via .env or environment variable
     supabase_url: str = ""
     supabase_anon_key: str = ""
     supabase_service_role_key: str = ""
@@ -47,6 +48,7 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
 
+@lru_cache
 def get_settings() -> Settings:
     """Return a cached Settings instance."""
     return Settings()

@@ -1,7 +1,7 @@
 """Airflow DAG: ingest MLB schedule, probable pitchers, and player metadata.
 
 Uses the MLB Stats API (statsapi.mlb.com). Idempotent via UPSERT on game_pk / player_id.
-Schedule: daily at 08:00 UTC.
+Schedule: daily at 06:00 UTC (first DAG in the daily chain).
 """
 
 from __future__ import annotations
@@ -16,8 +16,6 @@ if TYPE_CHECKING:
 
     import pandas as pd
 
-    from packages.shared.schemas.pipeline import PipelineResult
-
 
 default_args = {
     "owner": "diamond-copilot",
@@ -28,7 +26,7 @@ default_args = {
 
 @dag(
     dag_id="ingest_mlb_schedule",
-    schedule="0 8 * * *",
+    schedule="0 6 * * *",
     start_date=datetime(2026, 1, 1),
     catchup=False,
     default_args=default_args,
@@ -38,7 +36,7 @@ default_args = {
 def ingest_mlb_schedule(
     start_date: date | None = None,
     end_date: date | None = None,
-) -> PipelineResult[int]:
+) -> None:
     """Pull upcoming MLB schedule, probable pitchers, and player metadata.
 
     Default: next 7 days. Idempotent via UPSERT on natural keys.

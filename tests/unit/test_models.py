@@ -7,11 +7,13 @@ from packages.shared.db.models import (
     BattingStatsDaily,
     Game,
     LeagueScoringRule,
-    NewsArticle,
+    ParkFactor,
     Pitch,
     PitchingStatsDaily,
     Player,
     Prediction,
+    SeasonStatsBatting,
+    SeasonStatsPitching,
     UserLeague,
     UserRoster,
 )
@@ -22,16 +24,18 @@ EXPECTED_TABLES = {
     "pitches",
     "batting_stats_daily",
     "pitching_stats_daily",
+    "park_factors",
+    "season_stats_batting",
+    "season_stats_pitching",
     "user_leagues",
     "user_rosters",
     "league_scoring_rules",
     "predictions",
-    "news_articles",
 }
 
 
 class TestModelsImportable:
-    """Verify all 10 model classes can be imported."""
+    """Verify all 12 model classes can be imported."""
 
     def test_all_models_importable(self) -> None:
         models = [
@@ -40,13 +44,15 @@ class TestModelsImportable:
             Pitch,
             BattingStatsDaily,
             PitchingStatsDaily,
+            ParkFactor,
+            SeasonStatsBatting,
+            SeasonStatsPitching,
             UserLeague,
             UserRoster,
             LeagueScoringRule,
             Prediction,
-            NewsArticle,
         ]
-        assert len(models) == 10
+        assert len(models) == 12
 
 
 class TestBaseMetadata:
@@ -58,8 +64,8 @@ class TestBaseMetadata:
             f"Missing tables: {EXPECTED_TABLES - table_names}"
         )
 
-    def test_exactly_ten_tables(self) -> None:
-        assert len(Base.metadata.tables) == 10
+    def test_exactly_twelve_tables(self) -> None:
+        assert len(Base.metadata.tables) == 12
 
 
 class TestUniqueConstraints:
@@ -111,7 +117,17 @@ class TestUniqueConstraints:
         expected = tuple(sorted(("player_id", "game_pk", "model_version")))
         assert expected in constraints
 
-    def test_news_unique_constraint(self) -> None:
-        constraints = self._get_unique_constraint_columns("news_articles")
-        expected = tuple(sorted(("source", "external_id")))
+    def test_park_factors_unique_constraint(self) -> None:
+        constraints = self._get_unique_constraint_columns("park_factors")
+        expected = tuple(sorted(("venue_id", "season_year")))
+        assert expected in constraints
+
+    def test_season_batting_unique_constraint(self) -> None:
+        constraints = self._get_unique_constraint_columns("season_stats_batting")
+        expected = tuple(sorted(("player_id", "season_year", "source")))
+        assert expected in constraints
+
+    def test_season_pitching_unique_constraint(self) -> None:
+        constraints = self._get_unique_constraint_columns("season_stats_pitching")
+        expected = tuple(sorted(("player_id", "season_year", "source")))
         assert expected in constraints

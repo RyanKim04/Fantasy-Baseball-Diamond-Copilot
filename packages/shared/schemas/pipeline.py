@@ -2,7 +2,7 @@
 
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 T = TypeVar("T")
 
@@ -19,5 +19,5 @@ class PipelineResult(BaseModel, Generic[T]):
 
     status: Literal["success", "partial", "failure"]
     rows_upserted: int = 0
-    errors: list[str] = []
+    errors: list[str] = Field(default_factory=list)
     data: T | None = None
