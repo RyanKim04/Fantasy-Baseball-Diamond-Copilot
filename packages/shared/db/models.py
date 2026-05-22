@@ -259,9 +259,7 @@ class LeagueScoringRule(Base):
     """Scoring rules for a Yahoo fantasy league. One row per stat category."""
 
     __tablename__ = "league_scoring_rules"
-    __table_args__ = (
-        UniqueConstraint("league_id", "stat_category", name="uq_scoring_rule"),
-    )
+    __table_args__ = (UniqueConstraint("league_id", "stat_category", name="uq_scoring_rule"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     league_id: Mapped[int] = mapped_column(Integer, ForeignKey("user_leagues.id"), index=True)
@@ -305,9 +303,7 @@ class NewsArticle(Base):
     """Scraped player news for RAG pipeline (Phase 6)."""
 
     __tablename__ = "news_articles"
-    __table_args__ = (
-        UniqueConstraint("source", "external_id", name="uq_news_source_id"),
-    )
+    __table_args__ = (UniqueConstraint("source", "external_id", name="uq_news_source_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source: Mapped[str] = mapped_column(String(50))  # espn, rotowire, etc.
