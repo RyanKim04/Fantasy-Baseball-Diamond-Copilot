@@ -7,6 +7,7 @@
 *.key
 *.crt
 *credentials*.json
+.yahoo_token.json
 !.env.example
 
 # --- Python ---
