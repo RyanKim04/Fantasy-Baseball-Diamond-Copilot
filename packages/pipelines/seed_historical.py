@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 import pandas as pd
 from airflow.sdk import dag, task
 
+from packages.shared.constants import INT_COLUMNS, PYBASEBALL_COLUMN_MAP
+
 logger = logging.getLogger(__name__)
 
 default_args = {
@@ -22,62 +24,9 @@ default_args = {
     "retries": 0,
 }
 
-# Column mapping from pybaseball statcast() output to our Pitch model
-_PYBASEBALL_COLUMN_MAP = {
-    "game_pk": "game_pk",
-    "at_bat_number": "at_bat_number",
-    "pitch_number": "pitch_number",
-    "batter": "batter_id",
-    "pitcher": "pitcher_id",
-    "game_date": "game_date",
-    "pitch_type": "pitch_type",
-    "release_speed": "release_speed",
-    "release_spin_rate": "release_spin_rate",
-    "release_extension": "release_extension",
-    "pfx_x": "pfx_x",
-    "pfx_z": "pfx_z",
-    "plate_x": "plate_x",
-    "plate_z": "plate_z",
-    "launch_speed": "launch_speed",
-    "launch_angle": "launch_angle",
-    "hit_distance_sc": "hit_distance",
-    "barrel": "barrel",
-    "events": "events",
-    "description": "description",
-    "type": "type",
-    "zone": "zone",
-    "stand": "stand",
-    "p_throws": "p_throws",
-    "inning": "inning",
-    "inning_topbot": "inning_topbot",
-    "outs_when_up": "outs_when_up",
-    "balls": "balls",
-    "strikes": "strikes",
-    "on_1b": "on_1b",
-    "on_2b": "on_2b",
-    "on_3b": "on_3b",
-    "estimated_woba_using_speedangle": "estimated_woba_using_speedangle",
-    "estimated_ba_using_speedangle": "estimated_ba_using_speedangle",
-    "fielder_2": "fielder_2",
-}
-
-_INT_COLUMNS = [
-    "game_pk",
-    "at_bat_number",
-    "pitch_number",
-    "batter_id",
-    "pitcher_id",
-    "barrel",
-    "zone",
-    "inning",
-    "outs_when_up",
-    "balls",
-    "strikes",
-    "on_1b",
-    "on_2b",
-    "on_3b",
-    "fielder_2",
-]
+# Re-export for backward compatibility; canonical source is packages.shared.constants
+_PYBASEBALL_COLUMN_MAP = PYBASEBALL_COLUMN_MAP
+_INT_COLUMNS = INT_COLUMNS
 
 
 def _safe_float(val: object) -> float | None:
@@ -95,12 +44,19 @@ def _safe_float(val: object) -> float | None:
 
 
 def _pct_to_float(val: object) -> float | None:
-    """Convert a percentage value (e.g., '25.3 %' or 0.253) to a float fraction."""
+    """Convert a percentage value (e.g., '25.3 %' or 0.253) to a float fraction.
+
+    FanGraphs (via pybaseball) returns percentage stats like BB% as floats in
+    percentage form (e.g. 8.5 for 8.5%). Values > 1.0 are treated as
+    percentages and divided by 100. The edge case where a true rate is between
+    0 and 1 (e.g., a 0.8% walk rate) is extremely rare in MLB and accepted
+    as a known limitation.
+    """
     f = _safe_float(val)
     if f is None:
         return None
-    # If value > 1, assume it's a percentage and divide by 100
-    if f > 1.0:
+    # FanGraphs percentages are in 0-100 range (e.g. 8.5 for 8.5%)
+    if abs(f) > 1.0:
         return f / 100.0
     return f
 

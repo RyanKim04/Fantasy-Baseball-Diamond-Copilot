@@ -14,6 +14,7 @@ from airflow.sdk import dag, task
 from pybaseball import statcast
 from sqlalchemy.dialects.postgresql import insert
 
+from packages.shared.constants import PYBASEBALL_COLUMN_MAP
 from packages.shared.db.engine import get_engine
 from packages.shared.db.models import BattingStatsDaily, Pitch, PitchingStatsDaily
 
@@ -25,49 +26,16 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-# Columns we keep from pybaseball, mapped to our Pitch model column names
-_PYBASEBALL_COLUMN_MAP = {
-    "game_pk": "game_pk",
-    "at_bat_number": "at_bat_number",
-    "pitch_number": "pitch_number",
-    "batter": "batter_id",
-    "pitcher": "pitcher_id",
-    "game_date": "game_date",
-    "pitch_type": "pitch_type",
-    "release_speed": "release_speed",
-    "release_spin_rate": "release_spin_rate",
-    "release_extension": "release_extension",
-    "pfx_x": "pfx_x",
-    "pfx_z": "pfx_z",
-    "plate_x": "plate_x",
-    "plate_z": "plate_z",
-    "launch_speed": "launch_speed",
-    "launch_angle": "launch_angle",
-    "hit_distance_sc": "hit_distance",
-    "barrel": "barrel",
-    "events": "events",
-    "description": "description",
-    "type": "type",
-    "zone": "zone",
-    "stand": "stand",
-    "p_throws": "p_throws",
-    "inning": "inning",
-    "inning_topbot": "inning_topbot",
-    "outs_when_up": "outs_when_up",
-    "balls": "balls",
-    "strikes": "strikes",
-    "on_1b": "on_1b",
-    "on_2b": "on_2b",
-    "on_3b": "on_3b",
-    "estimated_woba_using_speedangle": "estimated_woba_using_speedangle",
-    "estimated_ba_using_speedangle": "estimated_ba_using_speedangle",
-    "fielder_2": "fielder_2",
-}
+# Re-export for backward compatibility; canonical source is packages.shared.constants
+_PYBASEBALL_COLUMN_MAP = PYBASEBALL_COLUMN_MAP
 
 # Critical fields that must not be null
 _REQUIRED_FIELDS = ["game_pk", "at_bat_number", "pitch_number", "batter", "pitcher"]
 
-# Events that count as outs for IP calculation
+# Events that count as outs for IP calculation.
+# NOTE: caught_stealing and pickoff events are NOT included here because they
+# are not PA-ending events and do not appear in the Statcast `events` column
+# as plate-appearance outcomes.
 _OUT_EVENTS = {
     "field_out",
     "strikeout",
@@ -82,9 +50,6 @@ _OUT_EVENTS = {
     "sac_bunt",
     "sac_fly_double_play",
     "sac_bunt_double_play",
-    "caught_stealing_2b",
-    "caught_stealing_3b",
-    "caught_stealing_home",
 }
 
 
@@ -190,6 +155,31 @@ def ingest_statcast(
                 # Keep as nullable int (NaN-safe)
                 df[col] = df[col].astype("Int64")
 
+        # Validate a sample of rows against the Pydantic schema
+        from packages.shared.schemas.statcast import StatcastPitchRow
+
+        sample_size = min(100, len(df))
+        if sample_size > 0:
+            sample = df.sample(n=sample_size, random_state=42)
+            invalid_count = 0
+            for _, row in sample.iterrows():
+                try:
+                    StatcastPitchRow(
+                        **{
+                            k: v
+                            for k, v in row.items()
+                            if pd.notna(v) or k in StatcastPitchRow.model_fields
+                        }
+                    )
+                except Exception:
+                    invalid_count += 1
+            if invalid_count > 0:
+                logger.warning(
+                    "Pydantic validation: %d/%d sampled rows failed schema check",
+                    invalid_count,
+                    sample_size,
+                )
+
         logger.info("Validated and transformed %d pitches", len(df))
         return df
 
@@ -271,10 +261,10 @@ def ingest_statcast(
             pa = len(group)
             ab = pa - bb - hbp - sf - (events == "sac_bunt").sum()
 
-            # Quality of contact (from all pitches in the group's at-bats)
+            # Quality of contact -- only count batted ball events (those with exit velocity)
             batted = group[group["launch_speed"].notna()]
             exit_velocity_avg = batted["launch_speed"].mean() if len(batted) > 0 else None
-            barrel_pct = group["barrel"].mean() if group["barrel"].notna().any() else None
+            barrel_pct = batted["barrel"].mean() if len(batted) > 0 else None
             hard_hit_pct = (batted["launch_speed"] >= 95).mean() if len(batted) > 0 else None
             xwoba = (
                 group["estimated_woba_using_speedangle"].mean()
@@ -343,7 +333,7 @@ def ingest_statcast(
             triple_play_outs = (events_notna == "triple_play").sum()
             outs += triple_play_outs * 2  # triple play already counted once above
 
-            ip = round(outs / 3, 1)
+            ip = outs / 3  # true fractional innings (1 out = 0.333...)
 
             h = events_notna.isin(["single", "double", "triple", "home_run"]).sum()
             bb = events_notna.isin(["walk"]).sum()
@@ -473,6 +463,10 @@ def ingest_statcast(
         return total
 
     # Task wiring
+    # NOTE: aggregate_daily_batting and aggregate_daily_pitching run in parallel
+    # with upsert_pitches intentionally. All three read the same immutable `clean`
+    # DataFrame (passed via XCom). The aggregation tasks do not depend on the
+    # DB write; they derive stats directly from the in-memory pitch data.
     raw = fetch_statcast_range(start_date, end_date)
     clean = validate_and_transform(raw)
     upsert_pitches(clean)

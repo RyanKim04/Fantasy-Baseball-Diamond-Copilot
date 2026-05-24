@@ -1,11 +1,9 @@
-version: "3.8"
-
 x-airflow-common: &airflow-common
-  image: apache/airflow:2.9-python3.11
+  image: apache/airflow:3.0-python3.11
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://diamond:diamond_dev@postgres:5432/diamond_copilot
-    AIRFLOW__CORE__FERNET_KEY: "81HqDtbqAywKSOumSha3BhWNOdQ26slT6K0YaZeZyPs="
+    AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW__CORE__FERNET_KEY:-}"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"

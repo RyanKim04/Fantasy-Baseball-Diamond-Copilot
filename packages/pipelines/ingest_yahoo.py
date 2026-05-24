@@ -15,6 +15,26 @@ from airflow.sdk import dag, task
 
 logger = logging.getLogger(__name__)
 
+
+def _extract_yahoo_player_id(yahoo_id: str) -> int | None:
+    """Extract numeric player ID from Yahoo format 'mlb.p.545361'.
+
+    Yahoo player IDs look like "mlb.p.545361" -- we extract the trailing
+    numeric MLBAM ID. Falls back to parsing the raw value as an integer.
+    Returns None if extraction fails.
+    """
+    parts = str(yahoo_id).split(".")
+    if len(parts) >= 3:
+        try:
+            return int(parts[-1])
+        except ValueError:
+            return None
+    try:
+        return int(yahoo_id)
+    except (ValueError, TypeError):
+        return None
+
+
 default_args = {
     "owner": "diamond-copilot",
     "retries": 1,
@@ -235,28 +255,32 @@ def ingest_yahoo(league_key: str | None = None) -> None:
         engine = get_engine()
         total = 0
 
-        # --- UPSERT user_leagues ---
-        league_row = {
-            "yahoo_league_key": league_info["yahoo_league_key"],
-            "league_name": league_info.get("league_name"),
-            "season_year": league_info.get("season_year"),
-            "num_teams": league_info.get("num_teams"),
-            "scoring_type": league_info.get("scoring_type"),
-            "current_week": league_info.get("current_week"),
-            "user_team_key": league_info.get("user_team_key"),
-        }
-        league_table = UserLeague.__table__
-        stmt = pg_insert(league_table).values([league_row])
-        update_cols = {
-            c.name: stmt.excluded[c.name]
-            for c in league_table.c
-            if c.name not in ("id", "created_at")
-        }
-        stmt = stmt.on_conflict_do_update(constraint="uq_yahoo_league_key", set_=update_cols)
+        # --- Use a SINGLE connection for the entire upsert operation ---
+        # This avoids cross-connection issues where league_id read could miss
+        # the just-upserted row if using separate connections.
         with engine.connect() as conn:
+            # --- UPSERT user_leagues ---
+            league_row = {
+                "yahoo_league_key": league_info["yahoo_league_key"],
+                "league_name": league_info.get("league_name"),
+                "season_year": league_info.get("season_year"),
+                "num_teams": league_info.get("num_teams"),
+                "scoring_type": league_info.get("scoring_type"),
+                "current_week": league_info.get("current_week"),
+                "user_team_key": league_info.get("user_team_key"),
+            }
+            league_table = UserLeague.__table__
+            stmt = pg_insert(league_table).values([league_row])
+            update_cols = {
+                c.name: stmt.excluded[c.name]
+                for c in league_table.c
+                if c.name not in ("id", "created_at")
+            }
+            stmt = stmt.on_conflict_do_update(constraint="uq_yahoo_league_key", set_=update_cols)
             conn.execute(stmt)
             conn.commit()
-            # Get the league_id for FK references
+
+            # Read back league_id in SAME connection
             result = conn.execute(
                 league_table.select().where(
                     league_table.c.yahoo_league_key == league_info["yahoo_league_key"]
@@ -264,65 +288,73 @@ def ingest_yahoo(league_key: str | None = None) -> None:
             )
             league_row_db = result.fetchone()
             league_id = league_row_db.id if league_row_db else None
-        total += 1
-        logger.info("Upserted league: %s", league_info.get("league_name"))
+            total += 1
+            logger.info("Upserted league: %s", league_info.get("league_name"))
 
-        if not league_id:
-            logger.warning("Could not determine league_id after upsert")
-            return total
+            if not league_id:
+                logger.warning("Could not determine league_id after upsert")
+                return total
 
-        # --- UPSERT user_rosters ---
-        if roster:
-            today = date.today()
-            roster_rows = []
-            for player in roster:
-                roster_rows.append(
-                    {
+            # --- UPSERT user_rosters ---
+            if roster:
+                today = date.today()
+                roster_table = UserRoster.__table__
+                skipped = 0
+                for player in roster:
+                    player_id = _extract_yahoo_player_id(player["player_id"])
+                    if player_id is None:
+                        logger.warning(
+                            "Skipping player with unparseable Yahoo ID: %s",
+                            player["player_id"],
+                        )
+                        skipped += 1
+                        continue
+                    row = {
                         "league_id": league_id,
-                        "player_id": hash(player["player_id"]) % (2**31),
+                        "player_id": player_id,
                         "roster_date": today,
                         "roster_position": player.get("position_slot"),
                         "acquisition_type": player.get("acquisition_type"),
                     }
-                )
-
-            roster_table = UserRoster.__table__
-            for row in roster_rows:
-                stmt = pg_insert(roster_table).values([row])
-                update_cols = {
-                    c.name: stmt.excluded[c.name]
-                    for c in roster_table.c
-                    if c.name not in ("id", "created_at")
-                }
-                stmt = stmt.on_conflict_do_update(constraint="uq_roster_slot", set_=update_cols)
-                with engine.connect() as conn:
+                    stmt = pg_insert(roster_table).values([row])
+                    update_cols = {
+                        c.name: stmt.excluded[c.name]
+                        for c in roster_table.c
+                        if c.name not in ("id", "created_at")
+                    }
+                    stmt = stmt.on_conflict_do_update(
+                        constraint="uq_roster_slot", set_=update_cols
+                    )
                     conn.execute(stmt)
-                    conn.commit()
-            total += len(roster_rows)
-            logger.info("Upserted %d roster entries", len(roster_rows))
+                if skipped > 0:
+                    logger.warning("Skipped %d players with unparseable Yahoo IDs", skipped)
+                conn.commit()
+                total += len(roster) - skipped
+                logger.info("Upserted %d roster entries", len(roster) - skipped)
 
-        # --- UPSERT league_scoring_rules ---
-        if scoring_rules:
-            rules_table = LeagueScoringRule.__table__
-            for rule in scoring_rules:
-                rule_row = {
-                    "league_id": league_id,
-                    "stat_category": rule["stat_category"],
-                    "points_value": rule["points_value"],
-                    "is_negative": rule.get("is_negative", False),
-                }
-                stmt = pg_insert(rules_table).values([rule_row])
-                update_cols = {
-                    c.name: stmt.excluded[c.name]
-                    for c in rules_table.c
-                    if c.name not in ("id", "created_at")
-                }
-                stmt = stmt.on_conflict_do_update(constraint="uq_scoring_rule", set_=update_cols)
-                with engine.connect() as conn:
+            # --- UPSERT league_scoring_rules ---
+            if scoring_rules:
+                rules_table = LeagueScoringRule.__table__
+                for rule in scoring_rules:
+                    rule_row = {
+                        "league_id": league_id,
+                        "stat_category": rule["stat_category"],
+                        "points_value": rule["points_value"],
+                        "is_negative": rule.get("is_negative", False),
+                    }
+                    stmt = pg_insert(rules_table).values([rule_row])
+                    update_cols = {
+                        c.name: stmt.excluded[c.name]
+                        for c in rules_table.c
+                        if c.name not in ("id", "created_at")
+                    }
+                    stmt = stmt.on_conflict_do_update(
+                        constraint="uq_scoring_rule", set_=update_cols
+                    )
                     conn.execute(stmt)
-                    conn.commit()
-            total += len(scoring_rules)
-            logger.info("Upserted %d scoring rules", len(scoring_rules))
+                conn.commit()
+                total += len(scoring_rules)
+                logger.info("Upserted %d scoring rules", len(scoring_rules))
 
         # Matchups are logged but not persisted (no matchups table in schema)
         if matchups:

@@ -53,25 +53,23 @@ def ingest_boxscores() -> None:
     @task(retries=3, retry_delay=timedelta(seconds=60))
     def fetch_completed_games() -> list[int]:
         """Query games table for recent completed games without boxscore data."""
-        from sqlalchemy import text
+        from sqlalchemy import select
 
         from packages.shared.db.engine import get_engine
+        from packages.shared.db.models import BattingStatsDaily, Game
 
         engine = get_engine()
-        two_days_ago = date.today() - timedelta(days=2)
+        cutoff_date = date.today() - timedelta(days=2)
 
-        query = text("""
-            SELECT g.game_pk
-            FROM games g
-            WHERE g.status = 'Final'
-              AND g.game_date >= :cutoff_date
-              AND g.game_pk NOT IN (
-                  SELECT DISTINCT game_pk FROM batting_stats_daily
-              )
-        """)
+        stmt = (
+            select(Game.game_pk)
+            .where(Game.status == "Final")
+            .where(Game.game_date >= cutoff_date)
+            .where(Game.game_pk.not_in(select(BattingStatsDaily.game_pk).distinct()))
+        )
 
         with engine.connect() as conn:
-            result = conn.execute(query, {"cutoff_date": two_days_ago})
+            result = conn.execute(stmt)
             game_pks = [row[0] for row in result]
 
         logger.info("Found %d completed games needing boxscore data", len(game_pks))
@@ -222,6 +220,32 @@ def ingest_boxscores() -> None:
                             "quality_starts": quality_starts,
                         }
                     )
+
+        # Validate lines against Pydantic schemas
+        from packages.shared.schemas.mlb_schedule import (
+            BoxscoreBattingLine,
+            BoxscorePitchingLine,
+        )
+
+        for line in batting_lines:
+            try:
+                BoxscoreBattingLine(**line)
+            except Exception:
+                logger.warning(
+                    "Batting line failed Pydantic validation: player_id=%s, game_pk=%d",
+                    line.get("player_id"),
+                    game_pk,
+                )
+
+        for line in pitching_lines:
+            try:
+                BoxscorePitchingLine(**line)
+            except Exception:
+                logger.warning(
+                    "Pitching line failed Pydantic validation: player_id=%s, game_pk=%d",
+                    line.get("player_id"),
+                    game_pk,
+                )
 
         logger.info(
             "game_pk=%d: %d batting lines, %d pitching lines",
