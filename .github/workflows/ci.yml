@@ -90,20 +90,17 @@ jobs:
       - name: Run integration tests
         run: pytest tests/integration/ -v --tb=short
 
-  docker-build:
-    name: Docker Build
-    runs-on: ubuntu-latest
-    needs: [test-unit, test-integration]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build Docker image
-        run: docker build -t diamond-copilot:${{ github.sha }} -f infra/docker/Dockerfile .
-        continue-on-error: true  # Dockerfile may not exist yet
-
   # -----------------------------------------------------------------------
-  # DEPLOYMENT (dormant until Phase 4 -- uncomment and configure when ready)
+  # DOCKER BUILD + DEPLOYMENT (Phase 4 — uncomment when Dockerfile exists)
   # -----------------------------------------------------------------------
+  # docker-build:
+  #   name: Docker Build
+  #   runs-on: ubuntu-latest
+  #   needs: [test-unit, test-integration]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Build Docker image
+  #       run: docker build -t diamond-copilot:${{ github.sha }} -f infra/docker/Dockerfile .
   # deploy:
   #   name: Deploy to AWS ECS
   #   runs-on: ubuntu-latest
