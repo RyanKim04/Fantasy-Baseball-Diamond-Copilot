@@ -1,143 +1,124 @@
-# Fantasy Baseball Diamond Copilot — Starter Kit
+# Fantasy Baseball Diamond Copilot
 
-This kit contains everything Claude Code needs to start the project.
+An AI copilot for fantasy baseball: data-driven roster, trade, and playoff decisions powered by Statcast pitch-level data, MLB schedule feeds, and Yahoo Fantasy league integration.
 
-## Contents
-
-```
-fantasy-baseball-diamond-copilot/
-├── README.md              # You are here
-├── CLAUDE.md              # Auto-loaded by Claude Code on session start
-├── PROJECT_PLAN.md        # Full project spec — Phase 0 through 6
-└── .claude/
-    └── agents/            # The 5 dev-time subagents
-        ├── architect.md
-        ├── feature-engineer.md
-        ├── modeler.md
-        ├── evaluator.md
-        └── critic.md
-```
-
-## Quick start
-
-### 1. Install Claude Code
-
-Requires Node.js 18+.
-
-```bash
-npm install -g @anthropic-ai/claude-code
-```
-
-Verify: `claude --version`
-
-### 2. Create your project directory
-
-```bash
-mkdir fantasy-baseball-diamond-copilot
-cd fantasy-baseball-diamond-copilot
-git init
-```
-
-### 3. Drop in the starter kit files
-
-Copy these files into your `fantasy-baseball-diamond-copilot/` directory, preserving the `.claude/agents/` structure:
-
-```
-fantasy-baseball-diamond-copilot/
-├── CLAUDE.md
-├── PROJECT_PLAN.md
-└── .claude/agents/architect.md
-    .claude/agents/feature-engineer.md
-    .claude/agents/modeler.md
-    .claude/agents/evaluator.md
-    .claude/agents/critic.md
-```
-
-### 4. Initial commit
-
-```bash
-git add .
-git commit -m "chore: bootstrap project with plan and subagents"
-```
-
-### 5. Start Claude Code
-
-```bash
-claude
-```
-
-Claude Code auto-loads `CLAUDE.md` and discovers `.claude/agents/`.
-
-### 6. First prompt
-
-Paste this exactly:
-
-```
-We are starting this project. First, read PROJECT_PLAN.md and CLAUDE.md
-in full and confirm you understand:
-1. The mission and the 7 phases
-2. The 5-subagent workflow and which subagent owns which scope
-3. The critical rule that the evaluator's validation protocol is
-   committed before any modeling code is written
-
-After confirming, do not write any code yet. Use the architect
-subagent to propose the Phase 0 task breakdown (directory structure,
-interfaces, sub-tasks). I will review before we proceed.
-```
-
-### 7. Workflow from there
-
-For every phase:
-
-1. Architect proposes structure + task breakdown.
-2. You review and approve (or push back).
-3. For modeling phases: evaluator drafts validation protocol; you review.
-4. Specialists work in parallel.
-5. Critic reviews.
-6. Architect closes the phase against acceptance criteria.
-
-## Prerequisites you'll need over time
+## Prerequisites
 
 - **Python 3.11+** (use `pyenv` to manage versions)
-- **Node.js 18+** (for Claude Code and frontend)
-- **Docker** (for local Postgres and later for serving)
-- **uv** or `poetry` for Python dependency management (Phase 0 architect will decide)
-- **Anthropic API key** — set as `ANTHROPIC_API_KEY` env var
-- **Yahoo Developer App credentials** — register at https://developer.yahoo.com/apps/ for fantasy access (Phase 0)
-- **Supabase free account** — for managed Postgres (Phase 0)
-- **MLflow** — installed as Python dep (Phase 1)
+- **Docker Desktop** (for local Postgres, Airflow, and supporting services)
+- **Node.js 18+** (for Claude Code tooling)
 
-## Cost expectation
+## Quick Start
 
-- Months 1-6: ~$0/month (all free tiers + AWS Free Tier)
-- After AWS Free Tier expires: ~$10-20/month
-- Anthropic API for chatbot (Phase 6 onward): ~$5-15/month depending on usage
+### 1. Clone the repo
 
-## How to use the subagents
-
-In any Claude Code session, invoke a subagent explicitly:
-
-```
-Use the architect subagent to start Phase 1.
-Use the evaluator subagent to draft the validation protocol.
-Use the critic subagent to review the feature engineering work.
+```bash
+git clone <repo-url> fantasy-baseball-diamond-copilot
+cd fantasy-baseball-diamond-copilot
 ```
 
-Or let Claude Code auto-delegate based on the description in each agent file.
+### 2. Configure environment
 
-To create new agents or edit existing ones interactively, use the `/agents` command inside a Claude Code session.
+```bash
+cp .env.example .env
+# Edit .env and fill in:
+#   DATABASE_URL          - Postgres connection string
+#   YAHOO_CLIENT_ID       - Yahoo Developer App credentials
+#   YAHOO_CLIENT_SECRET   - Yahoo Developer App credentials
+```
 
-## Tips
+### 3. Install Python dependencies
 
-- **Restart your session if you edit agent files directly on disk.** Changes via `/agents` apply immediately; file edits do not.
-- **One phase at a time.** Resist the urge to let Claude Code run ahead.
-- **The critic is your friend.** Run it after every meaningful change.
-- **Commit often.** Each subagent's output should be a separate commit at minimum.
+```bash
+pip install -e ".[dev]"
+```
 
-## When stuck
+### 4. Start local services
 
-If a phase stalls or quality drops, the recovery move is:
+```bash
+docker compose -f infra/docker/docker-compose.yml up -d
+```
 
-1. Have the architect subagent summarize current state vs PROJECT_PLAN.md.
-2. Have the critic subagent enumerate concerns.
-3. Take the summary to a fresh session if context is polluted.
+This starts:
+- **Postgres** on port 5432
+- **Adminer** (DB UI) on port 8080
+- **Airflow** webserver on port 8081
+
+### 5. Run database migrations
+
+```bash
+alembic upgrade head
+```
+
+### 6. Trigger DAGs
+
+Open the Airflow UI at [http://localhost:8081](http://localhost:8081) and enable the ingestion DAGs. They will run on their configured schedules, or you can trigger them manually.
+
+## DAG Schedule
+
+| DAG | Schedule (UTC) | Description |
+|-----|---------------|-------------|
+| `ingest_mlb_schedule` | `0 6 * * *` (6:00 AM) | MLB schedule, probable pitchers, player metadata |
+| `ingest_boxscores` | `0 7 * * *` (7:00 AM) | Box score batting/pitching lines for completed games |
+| `ingest_statcast` | `0 8 * * *` (8:00 AM) | Statcast pitch-level data, aggregated to daily stats |
+| `ingest_yahoo` | `0 9 * * *` (9:00 AM) | Yahoo Fantasy league rosters, scoring rules, matchups |
+| `seed_historical` | Manual only | One-time backfill of 2018-2025 Statcast data |
+
+DAGs run in dependency order: schedule first, then boxscores, then statcast, then yahoo. All ingestion is idempotent via UPSERT on natural keys.
+
+## Development
+
+### Linting and formatting
+
+```bash
+ruff check .          # lint
+ruff check . --fix    # lint with auto-fix
+ruff format .         # format
+```
+
+### Running tests
+
+```bash
+pytest                # run all tests
+pytest -v --tb=short  # verbose with short tracebacks
+pytest tests/unit/    # unit tests only
+```
+
+### Database migrations
+
+```bash
+alembic revision --autogenerate -m "description"  # create migration
+alembic upgrade head                               # apply migrations
+alembic downgrade -1                               # rollback one step
+```
+
+## Project Structure
+
+```
+fantasy-baseball-diamond-copilot/
+├── packages/
+│   ├── shared/           # Shared code: DB models, schemas, config
+│   │   ├── db/           # SQLAlchemy models, engine, Alembic env
+│   │   ├── schemas/      # Pydantic validation schemas
+│   │   ├── config.py     # pydantic-settings configuration
+│   │   ├── constants.py  # Shared constants (column maps, etc.)
+│   │   └── types.py      # Branded NewType definitions
+│   ├── pipelines/        # Airflow DAGs for data ingestion
+│   └── ml/               # Machine learning (Phase 1+)
+│       ├── features/     # Feature engineering
+│       ├── models/       # Model definitions
+│       ├── training/     # Training scripts
+│       └── evaluation/   # Validation and calibration
+├── infra/
+│   ├── docker/           # Docker Compose for local services
+│   └── migrations/       # Alembic migration versions
+├── tests/
+│   ├── unit/             # Unit tests (models, schemas, engine)
+│   └── integration/      # Integration tests (DAG registration, pipelines)
+├── notebooks/            # Exploratory analysis (Phase 1+)
+├── docs/                 # Architecture decisions, task breakdowns
+├── alembic.ini           # Alembic configuration
+├── pyproject.toml        # Python project metadata and dependencies
+├── CLAUDE.md             # Claude Code operating manual
+└── PROJECT_PLAN.md       # Full project plan (Phase 0-6)
+```
