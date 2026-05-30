@@ -8,15 +8,12 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING
 
-import pandas as pd
 from airflow.sdk import dag, task
-from pybaseball import statcast
-from sqlalchemy.dialects.postgresql import insert
 
-from packages.shared.constants import PYBASEBALL_COLUMN_MAP
-from packages.shared.db.engine import get_engine
-from packages.shared.db.models import BattingStatsDaily, Pitch, PitchingStatsDaily
+if TYPE_CHECKING:
+    import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +23,12 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-# Re-export for backward compatibility; canonical source is packages.shared.constants
-_PYBASEBALL_COLUMN_MAP = PYBASEBALL_COLUMN_MAP
+
+def _get_column_map() -> dict[str, str]:
+    from packages.shared.constants import PYBASEBALL_COLUMN_MAP
+
+    return PYBASEBALL_COLUMN_MAP
+
 
 # Critical fields that must not be null
 _REQUIRED_FIELDS = ["game_pk", "at_bat_number", "pitch_number", "batter", "pitcher"]
@@ -77,6 +78,9 @@ def ingest_statcast(
 
         Returns a DataFrame with one row per pitch.
         """
+        import pandas as pd
+        from pybaseball import statcast
+
         if start_date is None:
             end_date = date.today() - timedelta(days=1)
             start_date = end_date - timedelta(days=1)
@@ -102,6 +106,8 @@ def ingest_statcast(
 
         Drops invalid rows, logs warnings. Returns cleaned DataFrame.
         """
+        import pandas as pd
+
         if raw_df.empty:
             logger.warning("Empty DataFrame received; nothing to validate.")
             return pd.DataFrame()
@@ -119,11 +125,11 @@ def ingest_statcast(
             )
 
         # Select only columns we need (those present in pybaseball output)
-        available_cols = [c for c in _PYBASEBALL_COLUMN_MAP if c in raw_df.columns]
+        available_cols = [c for c in _get_column_map() if c in raw_df.columns]
         df = raw_df[available_cols].copy()
 
         # Rename to match our model
-        rename_map = {k: _PYBASEBALL_COLUMN_MAP[k] for k in available_cols}
+        rename_map = {k: _get_column_map()[k] for k in available_cols}
         df = df.rename(columns=rename_map)
 
         # Convert inning_topbot: "Top"/"Bot" stays as-is (model stores String(3))
@@ -189,6 +195,12 @@ def ingest_statcast(
 
         Returns the number of rows upserted.
         """
+        import pandas as pd
+        from sqlalchemy.dialects.postgresql import insert
+
+        from packages.shared.db.engine import get_engine
+        from packages.shared.db.models import Pitch
+
         if df.empty:
             logger.info("No pitches to upsert.")
             return 0
@@ -232,6 +244,8 @@ def ingest_statcast(
 
         Returns a DataFrame matching StatcastBattingDaily schema.
         """
+        import pandas as pd
+
         if pitches_df.empty:
             return pd.DataFrame()
 
@@ -312,6 +326,8 @@ def ingest_statcast(
 
         Returns a DataFrame matching StatcastPitchingDaily schema.
         """
+        import pandas as pd
+
         if pitches_df.empty:
             return pd.DataFrame()
 
@@ -396,6 +412,12 @@ def ingest_statcast(
 
         Returns total rows upserted across both tables.
         """
+        import pandas as pd
+        from sqlalchemy.dialects.postgresql import insert
+
+        from packages.shared.db.engine import get_engine
+        from packages.shared.db.models import BattingStatsDaily, PitchingStatsDaily
+
         engine = get_engine()
         total = 0
         chunk_size = 1000

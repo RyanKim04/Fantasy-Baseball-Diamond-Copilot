@@ -1,8 +1,8 @@
 x-airflow-common: &airflow-common
-  image: apache/airflow:3.0-python3.11
+  image: apache/airflow:3.2.1-python3.11
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://diamond:diamond_dev@postgres:5432/diamond_copilot
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://diamond:diamond_dev@postgres:5432/airflow_metadata
     AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW__CORE__FERNET_KEY:-}"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
@@ -65,7 +65,7 @@ services:
   airflow-webserver:
     <<: *airflow-common
     container_name: diamond-copilot-airflow-webserver
-    command: webserver
+    command: api-server
     ports:
       - "8081:8080"
     restart: unless-stopped
