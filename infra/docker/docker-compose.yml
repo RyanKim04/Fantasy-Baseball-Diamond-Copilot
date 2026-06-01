@@ -1,5 +1,7 @@
 x-airflow-common: &airflow-common
-  image: apache/airflow:3.2.1-python3.11
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://diamond:diamond_dev@postgres:5432/airflow_metadata
@@ -7,6 +9,9 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
     PYTHONPATH: /opt/airflow
   volumes:
     - ../../packages/pipelines:/opt/airflow/dags
@@ -52,14 +57,7 @@ services:
     command:
       - -c
       - |
-        airflow db migrate &&
-        airflow users create \
-          --username admin \
-          --password admin \
-          --firstname Admin \
-          --lastname User \
-          --role Admin \
-          --email admin@example.com || true
+        airflow db migrate
     restart: "no"
 
   airflow-webserver:
