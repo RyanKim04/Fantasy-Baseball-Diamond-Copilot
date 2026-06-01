@@ -58,7 +58,8 @@ def get_oauth_session() -> Any:
     oauth = OAuth2(
         settings.yahoo_client_id,
         settings.yahoo_client_secret,
-        token_path=str(TOKEN_FILE),
+        from_file=str(TOKEN_FILE),
+        callback_uri=settings.yahoo_redirect_uri,
     )
 
     if not oauth.token_is_valid():
@@ -99,7 +100,7 @@ def refresh_token(token: dict[str, str]) -> dict[str, str]:
     oauth = OAuth2(
         settings.yahoo_client_id,
         settings.yahoo_client_secret,
-        token_path=str(TOKEN_FILE),
+        from_file=str(TOKEN_FILE),
     )
     oauth.refresh_access_token()
     logger.info("Yahoo OAuth token refreshed via manual refresh_token() call.")
@@ -167,7 +168,8 @@ if __name__ == "__main__":
     _oauth = OAuth2(
         _settings.yahoo_client_id,
         _settings.yahoo_client_secret,
-        token_path=str(TOKEN_FILE),
+        from_file=str(TOKEN_FILE),
+        callback_uri=_settings.yahoo_redirect_uri,
     )
 
     if _oauth.token_is_valid():
