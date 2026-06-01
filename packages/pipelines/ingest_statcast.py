@@ -193,19 +193,68 @@ def ingest_statcast(
     def upsert_pitches(df: pd.DataFrame) -> int:
         """UPSERT pitch-level rows into the pitches table.
 
+        Automatically creates placeholder rows in `players` and `games` tables
+        for any IDs referenced in the pitch data that don't already exist.
         Returns the number of rows upserted.
         """
         import pandas as pd
         from sqlalchemy.dialects.postgresql import insert
 
         from packages.shared.db.engine import get_engine
-        from packages.shared.db.models import Pitch
+        from packages.shared.db.models import Game, Pitch, Player
 
         if df.empty:
             logger.info("No pitches to upsert.")
             return 0
 
         engine = get_engine()
+
+        # Ensure referenced players exist (placeholder rows for FK integrity)
+        player_ids = set()
+        for col in ("batter_id", "pitcher_id"):
+            if col in df.columns:
+                player_ids.update(df[col].dropna().astype(int).unique())
+        if player_ids:
+            player_rows = [
+                {
+                    "player_id": int(pid),
+                    "name_first": "Unknown",
+                    "name_last": "Unknown",
+                    "name_display": f"Player {int(pid)}",
+                }
+                for pid in player_ids
+            ]
+            stmt = insert(Player.__table__).values(player_rows)
+            stmt = stmt.on_conflict_do_nothing(index_elements=["player_id"])
+            with engine.connect() as conn:
+                conn.execute(stmt)
+                conn.commit()
+            logger.info("Ensured %d player placeholders exist", len(player_ids))
+
+        # Ensure referenced games exist (placeholder rows for FK integrity)
+        if "game_pk" in df.columns:
+            game_pks = df["game_pk"].dropna().astype(int).unique()
+            game_rows = []
+            for gpk in game_pks:
+                game_date = None
+                mask = df["game_pk"] == gpk
+                if "game_date" in df.columns and mask.any():
+                    game_date = df.loc[mask, "game_date"].iloc[0]
+                game_rows.append(
+                    {
+                        "game_pk": int(gpk),
+                        "game_date": game_date or date.today(),
+                        "home_team": "UNK",
+                        "away_team": "UNK",
+                    }
+                )
+            stmt = insert(Game.__table__).values(game_rows)
+            stmt = stmt.on_conflict_do_nothing(index_elements=["game_pk"])
+            with engine.connect() as conn:
+                conn.execute(stmt)
+                conn.commit()
+            logger.info("Ensured %d game placeholders exist", len(game_pks))
+
         table = Pitch.__table__
 
         # Replace NaN with None for database insertion
@@ -276,13 +325,20 @@ def ingest_statcast(
             ab = pa - bb - hbp - sf - (events == "sac_bunt").sum()
 
             # Quality of contact -- only count batted ball events (those with exit velocity)
-            batted = group[group["launch_speed"].notna()]
+            batted = (
+                group[group["launch_speed"].notna()]
+                if "launch_speed" in group.columns
+                else group.iloc[0:0]
+            )
             exit_velocity_avg = batted["launch_speed"].mean() if len(batted) > 0 else None
-            barrel_pct = batted["barrel"].mean() if len(batted) > 0 else None
+            barrel_pct = (
+                batted["barrel"].mean() if "barrel" in batted.columns and len(batted) > 0 else None
+            )
             hard_hit_pct = (batted["launch_speed"] >= 95).mean() if len(batted) > 0 else None
             xwoba = (
                 group["estimated_woba_using_speedangle"].mean()
-                if group["estimated_woba_using_speedangle"].notna().any()
+                if "estimated_woba_using_speedangle" in group.columns
+                and group["estimated_woba_using_speedangle"].notna().any()
                 else None
             )
 
@@ -361,7 +417,11 @@ def ingest_statcast(
             batters_faced = group["at_bat_number"].nunique()
 
             # Ground ball percentage (using launch angle as proxy: < 10 degrees)
-            batted = group[group["launch_speed"].notna()]
+            batted = (
+                group[group["launch_speed"].notna()]
+                if "launch_speed" in group.columns
+                else group.iloc[0:0]
+            )
             if len(batted) > 0:
                 gb_pct = (
                     (batted["launch_angle"] < 10).mean()
@@ -373,7 +433,8 @@ def ingest_statcast(
 
             xwoba_against = (
                 group["estimated_woba_using_speedangle"].mean()
-                if group["estimated_woba_using_speedangle"].notna().any()
+                if "estimated_woba_using_speedangle" in group.columns
+                and group["estimated_woba_using_speedangle"].notna().any()
                 else None
             )
 
