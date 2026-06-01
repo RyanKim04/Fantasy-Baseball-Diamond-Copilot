@@ -29,7 +29,7 @@ By project end, the portfolio should demonstrate, with code on GitHub and a live
 
 | Skill area | Concrete artifact |
 |---|---|
-| **Data engineering** | Daily ETL pipeline (Prefect), Postgres schema, idempotent ingestion |
+| **Data engineering** | Daily ETL pipeline (Airflow), Postgres schema, idempotent ingestion |
 | **DS / ML modeling** | Time-series-aware feature engineering, gradient-boosted models with quantile regression for uncertainty, MLflow experiment tracking |
 | **Statistical thinking** | Probabilistic projections, Monte Carlo simulation, prediction intervals, drift detection |
 | **MLE / Infra** | Dockerized FastAPI model serving, CI/CD, AWS deployment for at least one service, monitoring + drift dashboards |
@@ -63,7 +63,7 @@ The Yahoo Fantasy API is the trickiest piece. Mitigations:
 | Layer | Choice | Why |
 |---|---|---|
 | Language | Python 3.11+ (backend/ML) + TypeScript (frontend) | Standard |
-| Data ingestion | **Prefect 3** | Better DX than Airflow, generous free cloud tier |
+| Data ingestion | **Apache Airflow 2.9** | Industry standard orchestrator, strongest resume signal for MLE roles |
 | Database | **Postgres on Supabase** | Free tier, includes auth + storage |
 | ML libs | **LightGBM, scikit-learn, statsmodels, scipy** | Tabular data, fast, well-supported |
 | Experiment tracking | **MLflow** (self-hosted on Render OR DagsHub free) | Industry standard for MLE |
@@ -110,7 +110,7 @@ The Yahoo Fantasy API is the trickiest piece. Mitigations:
          │ daily
          │
 ┌─────────────────────────────────────────────────────────────┐
-│              Prefect Pipelines (scheduled)                  │
+│              Airflow DAGs (scheduled)                       │
 │   - pybaseball ingestion  - Yahoo league sync               │
 │   - feature engineering   - nightly retraining              │
 └─────────────────────────────────────────────────────────────┘
@@ -146,7 +146,7 @@ fantasy-baseball-diamond-copilot/
 │   │   ├── models/
 │   │   ├── training/
 │   │   └── evaluation/
-│   ├── pipelines/               # Prefect flows
+│   ├── pipelines/               # Airflow DAGs
 │   │   ├── ingest_statcast.py
 │   │   ├── ingest_yahoo.py
 │   │   └── retrain_weekly.py
@@ -175,14 +175,14 @@ Each phase has: **Goal · Skills shown · Deliverables · Acceptance criteria ·
 
 **Deliverables:**
 - Postgres schema: `players`, `games`, `pitches`, `batting_stats_daily`, `pitching_stats_daily`, `user_leagues`, `user_rosters`, `league_scoring_rules`, `predictions`, `news_articles`.
-- Prefect flow `ingest_statcast.py`: pulls last 2 days of Statcast nightly.
-- Prefect flow `ingest_mlb_schedule.py`: pulls upcoming games + lineups.
+- Airflow DAG `ingest_statcast.py`: pulls last 2 days of Statcast nightly.
+- Airflow DAG `ingest_mlb_schedule.py`: pulls upcoming games + lineups.
 - Yahoo OAuth flow working for one user (committed but secret).
 - `ingest_yahoo.py`: pulls roster, scoring rules, matchups for connected user.
 - `seed_historical.py`: one-time backfill of 2018-2025 seasons.
 
 **Acceptance:**
-- ✅ Prefect dashboard shows 3 consecutive successful daily runs.
+- ✅ Airflow UI shows 3 consecutive successful daily runs.
 - ✅ DB queries return today's data without manual intervention.
 - ✅ Schema migrations versioned with Alembic.
 - ✅ All ingestion has retry + idempotency (re-running doesn't duplicate).
@@ -336,7 +336,7 @@ Recommendation: aim for Tier 2, treat Tier 3 as bonus.
 
 After completion, you can credibly write:
 
-- *"Built end-to-end ML platform predicting fantasy baseball performance: ingestion (Prefect), training (LightGBM with quantile regression, MLflow), serving (FastAPI on AWS ECS), monitoring (custom drift detection)."*
+- *"Built end-to-end ML platform predicting fantasy baseball performance: ingestion (Airflow), training (LightGBM with quantile regression, MLflow), serving (FastAPI on AWS ECS), monitoring (custom drift detection)."*
 - *"Designed temporal cross-validation pipeline and uncertainty-calibrated predictions, achieving 80% empirical PI coverage."*
 - *"Built RAG-powered conversational agent using Anthropic Claude with function calling over custom-built prediction APIs."*
 - *"Deployed multi-tenant Next.js + FastAPI app with OAuth, Postgres + pgvector, and CI/CD via GitHub Actions."*
