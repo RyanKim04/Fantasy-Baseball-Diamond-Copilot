@@ -68,6 +68,11 @@ class CQRACIModel:
         self._is_fitted: bool = False
 
     @property
+    def is_fitted(self) -> bool:
+        """Whether the model has been fitted."""
+        return self._is_fitted
+
+    @property
     def base_model(self) -> LGBMQuantileModel | None:
         """Access the underlying M2 model."""
         return self._base_model
@@ -113,7 +118,7 @@ class CQRACIModel:
         if self._base_model is None:
             self._base_model = LGBMQuantileModel()
 
-        if not self._base_model._is_fitted:
+        if not self._base_model.is_fitted:
             logger.info("Base M2 model not yet fitted. Training now.")
             self._base_model.fit(X_train, y_train, X_val, y_val)
 
@@ -145,7 +150,7 @@ class CQRACIModel:
         RuntimeError
             If the base model has not been fitted.
         """
-        if self._base_model is None or not self._base_model._is_fitted:
+        if self._base_model is None or not self._base_model.is_fitted:
             msg = "Base model must be fitted before calibration"
             raise RuntimeError(msg)
 

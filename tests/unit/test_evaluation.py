@@ -552,6 +552,56 @@ class TestCoverageAtLevels:
         assert 80 in result
         assert 50 in result
 
+    def test_70_and_90_levels(self, rng):
+        """M14: coverage_at_levels computes 70% and 90% levels correctly."""
+        n = 200
+        y_true = rng.normal(0, 1, n)
+        lower_10 = y_true - 5.0
+        upper_90 = y_true + 5.0
+        lower_15 = y_true - 4.0
+        upper_85 = y_true + 4.0
+        lower_05 = y_true - 6.0
+        upper_95 = y_true + 6.0
+        result = coverage_at_levels(
+            y_true, lower_10, upper_90,
+            lower_15=lower_15, upper_85=upper_85,
+            lower_05=lower_05, upper_95=upper_95,
+        )
+        assert 70 in result
+        assert 90 in result
+        # Very wide intervals -> 100% coverage at all levels
+        assert result[70] == 1.0
+        assert result[90] == 1.0
+
+    def test_returned_keys_match_requested_levels(self, rng):
+        """M14: returned dict has exactly the requested levels as keys."""
+        n = 100
+        y_true = rng.normal(0, 1, n)
+        lower_10 = y_true - 5.0
+        upper_90 = y_true + 5.0
+        lower_25 = y_true - 3.0
+        upper_75 = y_true + 3.0
+        lower_15 = y_true - 4.0
+        upper_85 = y_true + 4.0
+        lower_05 = y_true - 6.0
+        upper_95 = y_true + 6.0
+        result = coverage_at_levels(
+            y_true, lower_10, upper_90,
+            lower_25=lower_25, upper_75=upper_75,
+            lower_15=lower_15, upper_85=upper_85,
+            lower_05=lower_05, upper_95=upper_95,
+        )
+        assert set(result.keys()) == {50, 70, 80, 90}
+
+    def test_only_80_when_no_extras(self, rng):
+        """M14: only 80% key returned when no extra quantiles provided."""
+        n = 100
+        y_true = rng.normal(0, 1, n)
+        lower_10 = y_true - 5.0
+        upper_90 = y_true + 5.0
+        result = coverage_at_levels(y_true, lower_10, upper_90)
+        assert set(result.keys()) == {80}
+
 
 class TestCoverageByPredictedBin:
     """Tests for calibration.coverage_by_predicted_bin."""
@@ -582,17 +632,60 @@ class TestCoverageByPredictedBin:
 class TestCoverageDriftOverTime:
     """Tests for calibration.coverage_drift_over_time."""
 
-    def test_returns_correct_bins(self, rng):
+    def test_equal_mass_returns_correct_bins(self, rng):
+        """Equal-mass binning respects the n_bins parameter."""
         n = 100
         y_true = rng.normal(0, 1, n)
         lower = y_true - 5.0
         upper = y_true + 5.0
         dates = pd.date_range("2025-04-01", periods=n, freq="D").values
-        result = coverage_drift_over_time(y_true, lower, upper, dates, n_bins=4)
+        result = coverage_drift_over_time(
+            y_true, lower, upper, dates, n_bins=4, bin_method="equal_mass",
+        )
         assert "bin_labels" in result
         assert "coverage" in result
         assert "n_samples" in result
         assert len(result["bin_labels"]) == 4
+
+    def test_weekly_default_returns_weekly_bins(self, rng):
+        """Default bin_method='weekly' groups by calendar week."""
+        n = 28  # exactly 4 weeks
+        y_true = rng.normal(0, 1, n)
+        lower = y_true - 5.0
+        upper = y_true + 5.0
+        # Start on a Monday so weeks align cleanly
+        dates = pd.date_range("2025-04-07", periods=n, freq="D").values
+        result = coverage_drift_over_time(y_true, lower, upper, dates)
+        assert "bin_labels" in result
+        assert "coverage" in result
+        assert "n_samples" in result
+        # 28 days starting on a Monday -> 4 calendar weeks
+        assert len(result["bin_labels"]) == 4
+        # Each bin should have 7 samples
+        assert all(ns == 7 for ns in result["n_samples"])
+
+    def test_weekly_full_coverage(self, rng):
+        """Weekly bins report 100% coverage when intervals are very wide."""
+        n = 21
+        y_true = rng.normal(0, 1, n)
+        lower = y_true - 100.0
+        upper = y_true + 100.0
+        dates = pd.date_range("2025-04-07", periods=n, freq="D").values
+        result = coverage_drift_over_time(y_true, lower, upper, dates)
+        for cov in result["coverage"]:
+            assert cov == 1.0
+
+    def test_invalid_bin_method_raises(self, rng):
+        """Invalid bin_method raises ValueError."""
+        n = 20
+        y_true = rng.normal(0, 1, n)
+        lower = y_true - 5.0
+        upper = y_true + 5.0
+        dates = pd.date_range("2025-04-01", periods=n, freq="D").values
+        with pytest.raises(ValueError, match="bin_method"):
+            coverage_drift_over_time(
+                y_true, lower, upper, dates, bin_method="bad_method",
+            )
 
 
 class TestPITHistogram:

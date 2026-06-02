@@ -4,14 +4,19 @@ Family: P0 | Source: Statcast daily aggregates
 Anti-leakage justification: All rolling windows are computed per-player
 sorted by game_date, then shifted by 1 position so that the feature for
 game G uses only data from games strictly before G. The shift is applied
-AFTER the rolling aggregation, guaranteeing the current game's stats are
-never included.
+BEFORE the rolling aggregation on a DatetimeIndex, guaranteeing the current
+game's stats are never included. Rolling windows use calendar days (e.g.,
+'7D', '14D', '30D') not game counts.
 
-Hitters: rolling fantasy points, H, HR, RBI, SB, OBP, SLG, xwOBA, BABIP
-at windows {7, 14, 30} days, plus PA count per window.
+Hitters: rolling H, HR, RBI, SB, OBP, SLG, BABIP, xwOBA
+at windows {7, 14, 30} calendar days, plus PA count per window.
 
-Pitchers: rolling fantasy points, ERA, WHIP, K/9, BB/9, xFIP
-at windows {14, 30, 60} days, plus BF count per window.
+Pitchers: rolling ERA, WHIP, K/9, BB/9, xFIP
+at windows {14, 30, 60} calendar days, plus BF count per window.
+
+NOTE: fantasy_points is NOT included as a rolling feature. Per
+docs/feature_plan.md Global Rule 3, target-derived features are prohibited.
+The model must learn scoring-rule weighting from raw stats.
 
 Owner: feature-engineer subagent.
 Spec: docs/feature_plan.md, F1.
@@ -82,10 +87,11 @@ class RollingProductionBuilder:
             return self._build_pitcher(df)
 
     def _build_hitter(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Build rolling features for hitters."""
-        # Ensure needed columns exist, fill missing with 0
+        """Build rolling features for hitters using calendar-day windows."""
+        # Ensure needed columns exist, fill missing with 0.
+        # NOTE: fantasy_points is deliberately excluded (Global Rule 3).
         needed = [
-            "fantasy_points", "h", "hr", "rbi", "sb", "ab", "bb", "hbp",
+            "h", "hr", "rbi", "sb", "ab", "bb", "hbp",
             "sf", "pa", "doubles", "triples", "so",
         ]
         for col in needed:
@@ -118,91 +124,76 @@ class RollingProductionBuilder:
             - df["hr"].fillna(0) + df["sf"].fillna(0)
         )
 
-        result_frames = []
-        grouped = df.groupby("player_id")
+        # Process each player separately to apply calendar-day rolling
+        result_pieces = []
+        for player_id, grp in df.groupby("player_id"):
+            grp = grp.sort_values(["game_date", "game_pk"]).copy()
 
-        for window in HITTER_WINDOWS:
-            suffix = f"_{window}d"
+            # Convert game_date to DatetimeIndex for time-based rolling
+            grp["_dt_index"] = pd.to_datetime(grp["game_date"])
+            grp = grp.set_index("_dt_index")
 
-            # Count stats: rolling sum then shift
-            for stat in ["fantasy_points", "h", "hr", "rbi", "sb"]:
-                col_name = f"roll_{stat}{suffix}"
-                df[col_name] = (
-                    grouped[stat]
-                    .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                    .groupby(df["player_id"])
-                    .shift(1)
+            for window in HITTER_WINDOWS:
+                suffix = f"_{window}d"
+                window_str = f"{window}D"
+
+                # Count stats: shift(1) first, then rolling sum over calendar days
+                for stat in ["h", "hr", "rbi", "sb"]:
+                    shifted = grp[stat].shift(1)
+                    grp[f"roll_{stat}{suffix}"] = shifted.rolling(
+                        window_str, min_periods=1
+                    ).sum()
+
+                # PA count in window
+                shifted_pa = grp["pa"].shift(1)
+                grp[f"roll_pa{suffix}"] = shifted_pa.rolling(
+                    window_str, min_periods=1
+                ).sum()
+
+                # OBP: rolling sum of numerator / rolling sum of denominator
+                obp_num_shifted = grp["_obp_num"].shift(1)
+                obp_den_shifted = grp["_obp_den"].shift(1)
+                obp_num_roll = obp_num_shifted.rolling(window_str, min_periods=1).sum()
+                obp_den_roll = obp_den_shifted.rolling(window_str, min_periods=1).sum()
+                grp[f"roll_obp{suffix}"] = np.where(
+                    obp_den_roll > 0, obp_num_roll / obp_den_roll, np.nan
                 )
 
-            # PA count in window
-            df[f"roll_pa{suffix}"] = (
-                grouped["pa"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-
-            # OBP: rolling sum of numerator / rolling sum of denominator
-            obp_num_roll = (
-                grouped["_obp_num"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            obp_den_roll = (
-                grouped["_obp_den"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            df[f"roll_obp{suffix}"] = np.where(
-                obp_den_roll > 0, obp_num_roll / obp_den_roll, np.nan
-            )
-
-            # SLG: rolling TB / rolling AB
-            tb_roll = (
-                grouped["_tb"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            ab_roll = (
-                grouped["_ab"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            df[f"roll_slg{suffix}"] = np.where(
-                ab_roll > 0, tb_roll / ab_roll, np.nan
-            )
-
-            # BABIP
-            babip_num_roll = (
-                grouped["_babip_num"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            babip_den_roll = (
-                grouped["_babip_den"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            df[f"roll_babip{suffix}"] = np.where(
-                babip_den_roll > 0, babip_num_roll / babip_den_roll, np.nan
-            )
-
-            # xwOBA if available, else NaN
-            if "xwoba" in df.columns:
-                df[f"roll_xwoba{suffix}"] = (
-                    grouped["xwoba"]
-                    .transform(lambda s: s.rolling(window, min_periods=1).mean())
-                    .groupby(df["player_id"])
-                    .shift(1)
+                # SLG: rolling TB / rolling AB
+                tb_shifted = grp["_tb"].shift(1)
+                ab_shifted = grp["_ab"].shift(1)
+                tb_roll = tb_shifted.rolling(window_str, min_periods=1).sum()
+                ab_roll = ab_shifted.rolling(window_str, min_periods=1).sum()
+                grp[f"roll_slg{suffix}"] = np.where(
+                    ab_roll > 0, tb_roll / ab_roll, np.nan
                 )
-            else:
-                df[f"roll_xwoba{suffix}"] = np.nan
+
+                # BABIP
+                babip_num_shifted = grp["_babip_num"].shift(1)
+                babip_den_shifted = grp["_babip_den"].shift(1)
+                babip_num_roll = babip_num_shifted.rolling(
+                    window_str, min_periods=1
+                ).sum()
+                babip_den_roll = babip_den_shifted.rolling(
+                    window_str, min_periods=1
+                ).sum()
+                grp[f"roll_babip{suffix}"] = np.where(
+                    babip_den_roll > 0, babip_num_roll / babip_den_roll, np.nan
+                )
+
+                # xwOBA if available, else NaN
+                if "xwoba" in grp.columns:
+                    xwoba_shifted = grp["xwoba"].shift(1)
+                    grp[f"roll_xwoba{suffix}"] = xwoba_shifted.rolling(
+                        window_str, min_periods=1
+                    ).mean()
+                else:
+                    grp[f"roll_xwoba{suffix}"] = np.nan
+
+            grp = grp.reset_index(drop=True)
+            result_pieces.append(grp)
+
+        df = pd.concat(result_pieces, ignore_index=True)
 
         # Collect feature columns
         feature_cols = [c for c in df.columns if c.startswith("roll_")]
@@ -216,9 +207,10 @@ class RollingProductionBuilder:
         return result
 
     def _build_pitcher(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Build rolling features for pitchers."""
+        """Build rolling features for pitchers using calendar-day windows."""
+        # NOTE: fantasy_points is deliberately excluded (Global Rule 3).
         needed = [
-            "fantasy_points", "ip", "er", "h", "bb", "so", "hr_allowed",
+            "ip", "er", "h", "bb", "so", "hr_allowed",
             "batters_faced",
         ]
         for col in needed:
@@ -229,91 +221,68 @@ class RollingProductionBuilder:
         if df["batters_faced"].sum() == 0:
             df["batters_faced"] = (df["ip"].fillna(0) * 3 + 1).astype(int)
 
-        grouped = df.groupby("player_id")
+        # Process each player separately to apply calendar-day rolling
+        result_pieces = []
+        for player_id, grp in df.groupby("player_id"):
+            grp = grp.sort_values(["game_date", "game_pk"]).copy()
 
-        for window in PITCHER_WINDOWS:
-            suffix = f"_{window}d"
+            # Convert game_date to DatetimeIndex for time-based rolling
+            grp["_dt_index"] = pd.to_datetime(grp["game_date"])
+            grp = grp.set_index("_dt_index")
 
-            # Rolling fantasy points
-            df[f"roll_fantasy_points{suffix}"] = (
-                grouped["fantasy_points"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
+            for window in PITCHER_WINDOWS:
+                suffix = f"_{window}d"
+                window_str = f"{window}D"
 
-            # BF count
-            df[f"roll_bf{suffix}"] = (
-                grouped["batters_faced"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
+                # BF count (shift first, then roll)
+                bf_shifted = grp["batters_faced"].shift(1)
+                grp[f"roll_bf{suffix}"] = bf_shifted.rolling(
+                    window_str, min_periods=1
+                ).sum()
 
-            # ERA = (ER / IP) * 9 over rolling window
-            er_roll = (
-                grouped["er"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            ip_roll = (
-                grouped["ip"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            df[f"roll_era{suffix}"] = np.where(
-                ip_roll > 0, (er_roll / ip_roll) * 9.0, np.nan
-            )
+                # ERA = (ER / IP) * 9 over rolling window
+                er_shifted = grp["er"].shift(1)
+                ip_shifted = grp["ip"].shift(1)
+                er_roll = er_shifted.rolling(window_str, min_periods=1).sum()
+                ip_roll = ip_shifted.rolling(window_str, min_periods=1).sum()
+                grp[f"roll_era{suffix}"] = np.where(
+                    ip_roll > 0, (er_roll / ip_roll) * 9.0, np.nan
+                )
 
-            # WHIP = (H + BB) / IP
-            h_roll = (
-                grouped["h"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            bb_roll = (
-                grouped["bb"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            df[f"roll_whip{suffix}"] = np.where(
-                ip_roll > 0, (h_roll + bb_roll) / ip_roll, np.nan
-            )
+                # WHIP = (H + BB) / IP
+                h_shifted = grp["h"].shift(1)
+                bb_shifted = grp["bb"].shift(1)
+                h_roll = h_shifted.rolling(window_str, min_periods=1).sum()
+                bb_roll = bb_shifted.rolling(window_str, min_periods=1).sum()
+                grp[f"roll_whip{suffix}"] = np.where(
+                    ip_roll > 0, (h_roll + bb_roll) / ip_roll, np.nan
+                )
 
-            # K/9 = SO / IP * 9
-            so_roll = (
-                grouped["so"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            df[f"roll_k9{suffix}"] = np.where(
-                ip_roll > 0, (so_roll / ip_roll) * 9.0, np.nan
-            )
+                # K/9 = SO / IP * 9
+                so_shifted = grp["so"].shift(1)
+                so_roll = so_shifted.rolling(window_str, min_periods=1).sum()
+                grp[f"roll_k9{suffix}"] = np.where(
+                    ip_roll > 0, (so_roll / ip_roll) * 9.0, np.nan
+                )
 
-            # BB/9 = BB / IP * 9
-            df[f"roll_bb9{suffix}"] = np.where(
-                ip_roll > 0, (bb_roll / ip_roll) * 9.0, np.nan
-            )
+                # BB/9 = BB / IP * 9
+                grp[f"roll_bb9{suffix}"] = np.where(
+                    ip_roll > 0, (bb_roll / ip_roll) * 9.0, np.nan
+                )
 
-            # xFIP approximation: uses HR_allowed rate
-            # xFIP = ((13*(HR/IP*league_avg_HR_FB_rate) + 3*BB - 2*SO) / IP) + constant
-            # Simplified: use FIP = ((13*HR + 3*BB - 2*SO) / IP) + 3.2
-            hr_roll = (
-                grouped["hr_allowed"]
-                .transform(lambda s: s.rolling(window, min_periods=1).sum())
-                .groupby(df["player_id"])
-                .shift(1)
-            )
-            df[f"roll_xfip{suffix}"] = np.where(
-                ip_roll > 0,
-                ((13.0 * hr_roll + 3.0 * bb_roll - 2.0 * so_roll) / ip_roll) + 3.2,
-                np.nan,
-            )
+                # xFIP approximation: FIP = ((13*HR + 3*BB - 2*SO) / IP) + 3.2
+                hr_shifted = grp["hr_allowed"].shift(1)
+                hr_roll = hr_shifted.rolling(window_str, min_periods=1).sum()
+                grp[f"roll_xfip{suffix}"] = np.where(
+                    ip_roll > 0,
+                    ((13.0 * hr_roll + 3.0 * bb_roll - 2.0 * so_roll) / ip_roll) + 3.2,
+                    np.nan,
+                )
+
+            grp = grp.reset_index(drop=True)
+            result_pieces.append(grp)
+
+        df = pd.concat(result_pieces, ignore_index=True)
 
         feature_cols = [c for c in df.columns if c.startswith("roll_")]
         result = df[["player_id", "game_pk"] + feature_cols].copy()

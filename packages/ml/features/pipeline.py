@@ -184,10 +184,14 @@ def _build_hitter_features(
     base = base.merge(ctx_df, on=key, how="left")
 
     # F4: Opponent quality
+    # Drop fantasy_points from opponent data to prevent target leakage (M12)
+    opp_pitching_safe = pitching_stats.drop(
+        columns=["fantasy_points"], errors="ignore"
+    )
     opp = OpponentQualityBuilder()
     opp_df = opp.build(
         bat, as_of_date=as_of,
-        opponent_pitching=pitching_stats,
+        opponent_pitching=opp_pitching_safe,
         games=games,
         player_type="hitter",
     )
@@ -263,10 +267,14 @@ def _build_pitcher_features(
     base = base.merge(ctx_df, on=key, how="left")
 
     # F4: Opponent quality
+    # Drop fantasy_points from opponent data to prevent target leakage (M12)
+    opp_batting_safe = batting_stats.drop(
+        columns=["fantasy_points"], errors="ignore"
+    )
     opp = OpponentQualityBuilder()
     opp_df = opp.build(
         pitch, as_of_date=as_of,
-        opponent_batting=batting_stats,
+        opponent_batting=opp_batting_safe,
         games=games,
         player_type="pitcher",
     )

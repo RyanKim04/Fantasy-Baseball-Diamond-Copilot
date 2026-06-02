@@ -19,6 +19,7 @@ from packages.ml.evaluation.baselines import (
     predict_trailing_7d_mean,
 )
 from packages.ml.evaluation.calibration import (
+    coverage_at_levels,
     coverage_drift_over_time,
     pit_histogram,
     reliability_diagram,
@@ -26,6 +27,13 @@ from packages.ml.evaluation.calibration import (
 from packages.ml.evaluation.diagnostics import residual_vs_predicted, width_vs_predicted
 from packages.ml.evaluation.metrics import compute_population_metrics, rmse
 from packages.ml.evaluation.schemas import validate_prediction_dataframe
+from packages.ml.evaluation.slices import (
+    filter_eligible_hitters,
+    filter_eligible_pitchers,
+    slice_by_experience,
+    slice_by_playing_time_tertile,
+    slice_by_position,
+)
 from packages.shared.schemas.ml import (
     BaselineComparison,
     ModelCandidate,
@@ -45,6 +53,8 @@ def generate_report(
     actuals: pd.DataFrame,
     output_dir: Path,
     mlflow_run_ids: dict[ModelCandidate, str] | None = None,
+    report_timestamp: datetime | None = None,
+    season_stats: pd.DataFrame | None = None,
 ) -> Path:
     """Generate the full evaluation report for all model candidates.
 
@@ -69,6 +79,14 @@ def generate_report(
         Directory to write evaluation_report.md and plots.
     mlflow_run_ids : dict[ModelCandidate, str] | None
         MLflow run IDs for traceability.
+    report_timestamp : datetime | None
+        Fixed timestamp for deterministic reports (protocol section 7.4).
+        If None, ``datetime.now()`` is used.
+    season_stats : pd.DataFrame | None
+        Per-player season totals for eligibility filtering (protocol
+        section 6). Must contain ``player_id``, ``pa`` (for hitters),
+        ``ip`` (for pitchers). If None, eligibility filtering is skipped
+        (all players included).
 
     Returns
     -------
@@ -109,38 +127,74 @@ def generate_report(
         merged["actual_points"] = merged["fantasy_points"]
         joined[candidate] = merged
 
-    # ---- Step 3: Compute metrics per candidate x population ----
-    all_metrics: list[PopulationMetrics] = []
+    # ---- Step 3: Apply eligibility filtering (protocol section 6) ----
+    # Build eligible populations per candidate x player_type.
+    # Headline metrics use eligible-only; full-pop metrics are also reported.
+    eligible_joined: dict[ModelCandidate, pd.DataFrame] = {}
+    for candidate, df in joined.items():
+        hitters = df[df["player_type"] == PlayerType.HITTER.value]
+        pitchers = df[df["player_type"] == PlayerType.PITCHER.value]
+
+        eligible_hitters = filter_eligible_hitters(hitters, season_stats=season_stats)
+        eligible_pitchers = filter_eligible_pitchers(pitchers, season_stats=season_stats)
+        eligible_joined[candidate] = pd.concat(
+            [eligible_hitters, eligible_pitchers], ignore_index=True
+        )
+
+    # ---- Step 4: Compute headline metrics on ELIGIBLE population ----
+    headline_metrics: list[PopulationMetrics] = []
+    for candidate, df in eligible_joined.items():
+        for pt in [PlayerType.HITTER, PlayerType.PITCHER]:
+            pop = df[df["player_type"] == pt.value]
+            if len(pop) == 0:
+                continue
+            headline_metrics.append(
+                _compute_metrics_for_pop(pop, pt, candidate)
+            )
+
+    # ---- Step 4b: Compute full-population metrics for reference ----
+    full_pop_metrics: list[PopulationMetrics] = []
     for candidate, df in joined.items():
         for pt in [PlayerType.HITTER, PlayerType.PITCHER]:
             pop = df[df["player_type"] == pt.value]
             if len(pop) == 0:
                 continue
-
-            has_p10 = (
-                "predicted_p10" in pop.columns
-                and pop["predicted_p10"].notna().any()
+            full_pop_metrics.append(
+                _compute_metrics_for_pop(pop, pt, candidate)
             )
-            has_p90 = (
-                "predicted_p90" in pop.columns
-                and pop["predicted_p90"].notna().any()
-            )
-            p10 = pop["predicted_p10"].values if has_p10 else None
-            p90 = pop["predicted_p90"].values if has_p90 else None
 
-            metrics = compute_population_metrics(
+    # ---- Step 5: Multi-level coverage (protocol section 9 item 2) ----
+    # {(candidate, player_type): {nominal_level: empirical_coverage}}
+    multi_level_coverage: dict[tuple[str, str], dict[int, float]] = {}
+    for candidate, df in eligible_joined.items():
+        has_intervals = (
+            "predicted_p10" in df.columns
+            and "predicted_p90" in df.columns
+            and df["predicted_p10"].notna().any()
+        )
+        if not has_intervals:
+            continue
+        for pt in [PlayerType.HITTER, PlayerType.PITCHER]:
+            pop = df[df["player_type"] == pt.value]
+            if len(pop) == 0 or not pop["predicted_p10"].notna().any():
+                continue
+            coverage_dict = coverage_at_levels(
                 y_true=pop["actual_points"].values,
-                y_pred_mean=pop["predicted_mean"].values,
-                y_pred_p10=p10,
-                y_pred_p90=p90,
-                player_type=pt.value,
-                model_candidate=candidate.value,
+                lower_10=pop["predicted_p10"].values,
+                upper_90=pop["predicted_p90"].values,
+                # Additional quantile columns are optional; pass if present
+                lower_25=pop["predicted_p25"].values if "predicted_p25" in pop.columns and pop["predicted_p25"].notna().any() else None,
+                upper_75=pop["predicted_p75"].values if "predicted_p75" in pop.columns and pop["predicted_p75"].notna().any() else None,
+                lower_15=pop["predicted_p15"].values if "predicted_p15" in pop.columns and pop["predicted_p15"].notna().any() else None,
+                upper_85=pop["predicted_p85"].values if "predicted_p85" in pop.columns and pop["predicted_p85"].notna().any() else None,
+                lower_05=pop["predicted_p05"].values if "predicted_p05" in pop.columns and pop["predicted_p05"].notna().any() else None,
+                upper_95=pop["predicted_p95"].values if "predicted_p95" in pop.columns and pop["predicted_p95"].notna().any() else None,
             )
-            all_metrics.append(metrics)
+            multi_level_coverage[(candidate.value, pt.value)] = coverage_dict
 
-    # ---- Step 4: Compute baselines ----
+    # ---- Step 6: Compute baselines on eligible population ----
     all_baseline_comparisons: list[BaselineComparison] = []
-    for candidate, df in joined.items():
+    for candidate, df in eligible_joined.items():
         for pt in [PlayerType.HITTER, PlayerType.PITCHER]:
             pop = df[df["player_type"] == pt.value].copy()
             if len(pop) == 0:
@@ -184,8 +238,31 @@ def generate_report(
             )
             all_baseline_comparisons.append(comparison)
 
-    # ---- Step 5: Generate calibration diagnostics ----
-    for candidate, df in joined.items():
+    # ---- Step 7: Slice analysis (protocol sections 6 and 7.3) ----
+    # slice_results: list of (candidate, player_type, slice_name, PopulationMetrics)
+    slice_results: list[tuple[str, str, str, PopulationMetrics]] = []
+    slice_generators = [
+        ("position", slice_by_position),
+        ("experience", slice_by_experience),
+        ("playing_time", slice_by_playing_time_tertile),
+    ]
+    for candidate, df in eligible_joined.items():
+        for pt in [PlayerType.HITTER, PlayerType.PITCHER]:
+            pop = df[df["player_type"] == pt.value]
+            if len(pop) == 0:
+                continue
+            for slice_name, slicer in slice_generators:
+                slices = slicer(pop)
+                for label, slice_df in slices.items():
+                    if len(slice_df) < 2:
+                        continue
+                    metrics = _compute_metrics_for_pop(slice_df, pt, candidate)
+                    slice_results.append(
+                        (candidate.value, pt.value, f"{slice_name}/{label}", metrics)
+                    )
+
+    # ---- Step 8: Generate calibration diagnostics ----
+    for candidate, df in eligible_joined.items():
         has_intervals = (
             "predicted_p10" in df.columns
             and "predicted_p90" in df.columns
@@ -242,28 +319,59 @@ def generate_report(
                     dates=pop["game_date"].values,
                 )
 
-    # ---- Step 6: Write evaluation_report.md ----
+    # ---- Step 9: Write evaluation_report.md ----
+    ts = report_timestamp if report_timestamp is not None else datetime.now()
     report_path = output_dir / "evaluation_report.md"
     report_content = _format_report(
-        all_metrics=all_metrics,
+        headline_metrics=headline_metrics,
+        full_pop_metrics=full_pop_metrics,
         baseline_comparisons=all_baseline_comparisons,
+        multi_level_coverage=multi_level_coverage,
+        slice_results=slice_results,
         mlflow_run_ids=mlflow_run_ids,
+        report_timestamp=ts,
     )
     report_path.write_text(report_content, encoding="utf-8")
 
     return report_path
 
 
+def _compute_metrics_for_pop(
+    pop: pd.DataFrame,
+    pt: PlayerType,
+    candidate: ModelCandidate,
+) -> PopulationMetrics:
+    """Compute metrics for a single population slice."""
+    has_p10 = "predicted_p10" in pop.columns and pop["predicted_p10"].notna().any()
+    has_p90 = "predicted_p90" in pop.columns and pop["predicted_p90"].notna().any()
+    p10 = pop["predicted_p10"].values if has_p10 else None
+    p90 = pop["predicted_p90"].values if has_p90 else None
+
+    return compute_population_metrics(
+        y_true=pop["actual_points"].values,
+        y_pred_mean=pop["predicted_mean"].values,
+        y_pred_p10=p10,
+        y_pred_p90=p90,
+        player_type=pt.value,
+        model_candidate=candidate.value,
+    )
+
+
 def _format_report(
-    all_metrics: list[PopulationMetrics],
+    headline_metrics: list[PopulationMetrics],
+    full_pop_metrics: list[PopulationMetrics],
     baseline_comparisons: list[BaselineComparison],
+    multi_level_coverage: dict[tuple[str, str], dict[int, float]],
+    slice_results: list[tuple[str, str, str, PopulationMetrics]],
     mlflow_run_ids: dict[ModelCandidate, str] | None = None,
+    report_timestamp: datetime | None = None,
 ) -> str:
     """Format the evaluation report as markdown."""
+    ts = report_timestamp if report_timestamp is not None else datetime.now()
     lines: list[str] = []
     lines.append("# Evaluation Report")
     lines.append("")
-    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"Generated: {ts.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("")
 
     # MLflow run IDs
@@ -274,8 +382,8 @@ def _format_report(
             lines.append(f"- **{candidate.value}**: `{run_id}`")
         lines.append("")
 
-    # Headline metrics table
-    lines.append("## Headline Metrics")
+    # Headline metrics table (eligible population)
+    lines.append("## Headline Metrics (Eligible Population)")
     lines.append("")
     lines.append(
         "| Model | Population | N | RMSE | MAE | Spearman | "
@@ -283,18 +391,44 @@ def _format_report(
     )
     lines.append("|" + "---|" * 11)
 
-    for m in all_metrics:
-        cov = f"{m.coverage_80:.3f}" if m.coverage_80 is not None else "N/A"
-        sharp = f"{m.sharpness_mean_width:.2f}" if m.sharpness_mean_width is not None else "N/A"
-        pb10 = f"{m.pinball_10:.3f}" if m.pinball_10 is not None else "N/A"
-        pb50 = f"{m.pinball_50:.3f}" if m.pinball_50 is not None else "N/A"
-        pb90 = f"{m.pinball_90:.3f}" if m.pinball_90 is not None else "N/A"
-        lines.append(
-            f"| {m.model_candidate.value} | {m.player_type.value} | {m.n_predictions} | "
-            f"{m.rmse:.3f} | {m.mae:.3f} | {m.spearman_rho:.3f} | "
-            f"{cov} | {sharp} | {pb10} | {pb50} | {pb90} |"
-        )
+    for m in headline_metrics:
+        lines.append(_format_metrics_row(m))
     lines.append("")
+
+    # Full-population metrics (reference)
+    lines.append("## Full-Population Metrics (All Players)")
+    lines.append("")
+    lines.append(
+        "| Model | Population | N | RMSE | MAE | Spearman | "
+        "Coverage 80% | Sharpness | Pinball 10 | Pinball 50 | Pinball 90 |"
+    )
+    lines.append("|" + "---|" * 11)
+
+    for m in full_pop_metrics:
+        lines.append(_format_metrics_row(m))
+    lines.append("")
+
+    # Multi-level coverage table (protocol section 9 item 2)
+    if multi_level_coverage:
+        lines.append("## Multi-Level Coverage")
+        lines.append("")
+        # Collect all levels across all entries
+        all_levels: set[int] = set()
+        for cov_dict in multi_level_coverage.values():
+            all_levels.update(cov_dict.keys())
+        sorted_levels = sorted(all_levels)
+
+        header_levels = " | ".join(f"{lvl}%" for lvl in sorted_levels)
+        lines.append(f"| Model | Population | {header_levels} |")
+        lines.append("|" + "---|" * (2 + len(sorted_levels)))
+
+        for (cand, pt), cov_dict in multi_level_coverage.items():
+            vals = " | ".join(
+                f"{cov_dict[lvl]:.3f}" if lvl in cov_dict else "N/A"
+                for lvl in sorted_levels
+            )
+            lines.append(f"| {cand} | {pt} | {vals} |")
+        lines.append("")
 
     # Baseline comparisons table
     lines.append("## Baseline Comparisons")
@@ -318,7 +452,7 @@ def _format_report(
     # Coverage acceptability
     lines.append("## Coverage Acceptability")
     lines.append("")
-    for m in all_metrics:
+    for m in headline_metrics:
         if m.coverage_80 is not None:
             lo, hi = COVERAGE_ACCEPTABLE_RANGE
             in_range = lo <= m.coverage_80 <= hi
@@ -330,10 +464,27 @@ def _format_report(
             )
     lines.append("")
 
+    # Slice metrics (protocol sections 6 and 7.3)
+    if slice_results:
+        lines.append("## Slice Metrics")
+        lines.append("")
+        lines.append(
+            "| Model | Population | Slice | N | RMSE | MAE | Spearman | Coverage 80% |"
+        )
+        lines.append("|" + "---|" * 8)
+
+        for cand, pt, slice_label, m in slice_results:
+            cov = f"{m.coverage_80:.3f}" if m.coverage_80 is not None else "N/A"
+            lines.append(
+                f"| {cand} | {pt} | {slice_label} | {m.n_predictions} | "
+                f"{m.rmse:.3f} | {m.mae:.3f} | {m.spearman_rho:.3f} | {cov} |"
+            )
+        lines.append("")
+
     # Selection rule application
     lines.append("## Selection Rule (model_bakeoff.md section 6)")
     lines.append("")
-    selected = _apply_selection_rule(all_metrics, baseline_comparisons)
+    selected = _apply_selection_rule(headline_metrics, baseline_comparisons)
     if selected is not None:
         lines.append(f"**Selected model: {selected.value}**")
     else:
@@ -341,6 +492,20 @@ def _format_report(
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _format_metrics_row(m: PopulationMetrics) -> str:
+    """Format a single row for the metrics table."""
+    cov = f"{m.coverage_80:.3f}" if m.coverage_80 is not None else "N/A"
+    sharp = f"{m.sharpness_mean_width:.2f}" if m.sharpness_mean_width is not None else "N/A"
+    pb10 = f"{m.pinball_10:.3f}" if m.pinball_10 is not None else "N/A"
+    pb50 = f"{m.pinball_50:.3f}" if m.pinball_50 is not None else "N/A"
+    pb90 = f"{m.pinball_90:.3f}" if m.pinball_90 is not None else "N/A"
+    return (
+        f"| {m.model_candidate.value} | {m.player_type.value} | {m.n_predictions} | "
+        f"{m.rmse:.3f} | {m.mae:.3f} | {m.spearman_rho:.3f} | "
+        f"{cov} | {sharp} | {pb10} | {pb50} | {pb90} |"
+    )
 
 
 def _apply_selection_rule(

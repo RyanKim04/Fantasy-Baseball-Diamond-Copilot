@@ -41,6 +41,11 @@ class RidgeProjectionModel:
         self._is_fitted: bool = False
         self._feature_names: list[str] = []
 
+    @property
+    def is_fitted(self) -> bool:
+        """Whether the model has been fitted."""
+        return self._is_fitted
+
     def fit(
         self,
         X_train: pd.DataFrame,

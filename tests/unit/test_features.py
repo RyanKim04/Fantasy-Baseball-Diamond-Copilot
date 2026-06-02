@@ -196,25 +196,26 @@ class TestRollingProductionBuilder:
 
     def test_hitter_output_columns(self) -> None:
         from packages.ml.features.rolling import RollingProductionBuilder
-        from packages.ml.features.scoring import compute_target_batting
 
-        stats = compute_target_batting(_make_batting_stats(n_games=10))
+        stats = _make_batting_stats(n_games=10)
         builder = RollingProductionBuilder()
         result = builder.build(stats, as_of_date=date(2024, 6, 30), player_type="hitter")
 
         assert "player_id" in result.columns
         assert "game_pk" in result.columns
-        # Check key rolling columns exist
+        # Check key rolling columns exist (no fantasy_points -- Global Rule 3)
         for w in [7, 14, 30]:
-            assert f"roll_fantasy_points_{w}d" in result.columns
             assert f"roll_h_{w}d" in result.columns
             assert f"roll_hr_{w}d" in result.columns
+            assert f"roll_rbi_{w}d" in result.columns
+            assert f"roll_pa_{w}d" in result.columns
+            # fantasy_points must NOT be present
+            assert f"roll_fantasy_points_{w}d" not in result.columns
 
     def test_pitcher_output_columns(self) -> None:
         from packages.ml.features.rolling import RollingProductionBuilder
-        from packages.ml.features.scoring import compute_target_pitching
 
-        stats = compute_target_pitching(_make_pitching_stats(n_games=10))
+        stats = _make_pitching_stats(n_games=10)
         builder = RollingProductionBuilder()
         result = builder.build(stats, as_of_date=date(2024, 9, 30), player_type="pitcher")
 
@@ -222,29 +223,29 @@ class TestRollingProductionBuilder:
             assert f"roll_era_{w}d" in result.columns
             assert f"roll_whip_{w}d" in result.columns
             assert f"roll_k9_{w}d" in result.columns
+            # fantasy_points must NOT be present
+            assert f"roll_fantasy_points_{w}d" not in result.columns
 
     def test_first_game_is_nan(self) -> None:
         """First game for a player should have NaN rolling features (shift=1)."""
         from packages.ml.features.rolling import RollingProductionBuilder
-        from packages.ml.features.scoring import compute_target_batting
 
-        stats = compute_target_batting(_make_batting_stats(n_games=5))
+        stats = _make_batting_stats(n_games=5)
         builder = RollingProductionBuilder()
         result = builder.build(stats, as_of_date=date(2024, 6, 30), player_type="hitter")
 
         first_row = result[result["game_pk"] == 100000]
-        assert first_row["roll_fantasy_points_7d"].isna().all()
+        assert first_row["roll_h_7d"].isna().all()
 
     def test_no_current_game_in_rolling(self) -> None:
         """The rolling value for game N must NOT include game N's stats.
 
-        Anti-leakage: we set game N's fantasy_points to 999 and verify
+        Anti-leakage: we set game N's h to 999 and verify
         the rolling feature for game N does not change.
         """
         from packages.ml.features.rolling import RollingProductionBuilder
-        from packages.ml.features.scoring import compute_target_batting
 
-        stats = compute_target_batting(_make_batting_stats(n_games=5))
+        stats = _make_batting_stats(n_games=5)
         builder = RollingProductionBuilder()
         result_normal = builder.build(
             stats.copy(), as_of_date=date(2024, 6, 30), player_type="hitter"
@@ -252,22 +253,84 @@ class TestRollingProductionBuilder:
 
         # Modify game N=4 (index 4) stats dramatically
         stats_modified = stats.copy()
-        stats_modified.loc[stats_modified["game_pk"] == 100004, "fantasy_points"] = 999.0
+        stats_modified.loc[stats_modified["game_pk"] == 100004, "h"] = 999
         result_modified = builder.build(
             stats_modified, as_of_date=date(2024, 6, 30), player_type="hitter"
         )
 
         # The rolling value for game 100004 should be the same in both
-        r1 = result_normal[result_normal["game_pk"] == 100004]["roll_fantasy_points_7d"].values
-        r2 = result_modified[result_modified["game_pk"] == 100004]["roll_fantasy_points_7d"].values
+        r1 = result_normal[result_normal["game_pk"] == 100004]["roll_h_7d"].values
+        r2 = result_modified[result_modified["game_pk"] == 100004]["roll_h_7d"].values
         np.testing.assert_array_almost_equal(r1, r2)
+
+    def test_no_target_derived_features(self) -> None:
+        """Rolling builder must NOT produce any fantasy_points columns.
+
+        Per docs/feature_plan.md Global Rule 3, target-derived features are
+        prohibited. The model must learn scoring-rule weighting from raw stats.
+        """
+        from packages.ml.features.rolling import RollingProductionBuilder
+
+        stats = _make_batting_stats(n_games=10)
+        # Even if fantasy_points is in the input, it must not appear in output
+        stats["fantasy_points"] = 10.0
+        builder = RollingProductionBuilder()
+        result = builder.build(stats, as_of_date=date(2024, 6, 30), player_type="hitter")
+        fp_cols = [c for c in result.columns if "fantasy_points" in c]
+        assert fp_cols == [], f"Target-derived columns found: {fp_cols}"
+
+        # Same for pitchers
+        pitch = _make_pitching_stats(n_games=6)
+        pitch["fantasy_points"] = 20.0
+        result_p = builder.build(pitch, as_of_date=date(2024, 9, 30), player_type="pitcher")
+        fp_cols_p = [c for c in result_p.columns if "fantasy_points" in c]
+        assert fp_cols_p == [], f"Target-derived columns found: {fp_cols_p}"
+
+    def test_calendar_day_window_excludes_old_games(self) -> None:
+        """Games older than the calendar-day window should NOT be included.
+
+        Create a player with games spaced 5 days apart. For a 7-day window,
+        only the most recent game (within 7 calendar days) should contribute.
+        """
+        from packages.ml.features.rolling import RollingProductionBuilder
+
+        # Games every 5 days: June 1, 6, 11, 16, 21
+        rows = []
+        for i in range(5):
+            gd = date(2024, 6, 1) + timedelta(days=i * 5)
+            rows.append({
+                "player_id": 1, "game_pk": 300000 + i, "game_date": gd,
+                "ab": 4, "h": 2, "doubles": 0, "triples": 0, "hr": 1,
+                "r": 1, "rbi": 1, "bb": 1, "hbp": 0, "sb": 0,
+                "cs": 0, "so": 1, "sf": 0, "pa": 5,
+            })
+        stats = pd.DataFrame(rows)
+        builder = RollingProductionBuilder()
+        result = builder.build(stats, as_of_date=date(2024, 6, 30), player_type="hitter")
+
+        # For game on June 21 (game_pk=300004):
+        # shift(1) means we look at games up to June 16.
+        # 7-day window from June 16 back = June 10-16.
+        # Only June 16 (game_pk=300003) falls in that window.
+        # June 11 (game_pk=300002) is at day index June 11, which is 5 days
+        # before June 16 -> within 7D window. So games 300002 and 300003.
+        # Wait -- June 11 to June 16 = 5 days, within 7D. So sum of h = 2+2 = 4.
+        row = result[result["game_pk"] == 300004]
+        roll_h_7d = row["roll_h_7d"].values[0]
+        # Games within 7 calendar days of June 16: June 11 and June 16 -> h=2+2=4
+        assert roll_h_7d == pytest.approx(4.0)
+
+        # For a 14-day window on June 21:
+        # shifted to June 16, 14-day window = June 3-16.
+        # June 6 (300001), June 11 (300002), June 16 (300003) -> h=2+2+2=6
+        roll_h_14d = row["roll_h_14d"].values[0]
+        assert roll_h_14d == pytest.approx(6.0)
 
     def test_excludes_future_data(self) -> None:
         """as_of_date guard: rows after as_of_date must be excluded."""
         from packages.ml.features.rolling import RollingProductionBuilder
-        from packages.ml.features.scoring import compute_target_batting
 
-        stats = compute_target_batting(_make_batting_stats(n_games=10))
+        stats = _make_batting_stats(n_games=10)
         builder = RollingProductionBuilder()
         result = builder.build(
             stats, as_of_date=date(2024, 6, 5), player_type="hitter"
@@ -786,9 +849,8 @@ class TestLeakageGuards:
         """Rolling builder output for game G must be identical whether future
         games G+1, G+2, ... are present in the input or not."""
         from packages.ml.features.rolling import RollingProductionBuilder
-        from packages.ml.features.scoring import compute_target_batting
 
-        stats_full = compute_target_batting(_make_batting_stats(n_games=10))
+        stats_full = _make_batting_stats(n_games=10)
         stats_partial = stats_full[stats_full["game_pk"] <= 100004].copy()
 
         builder = RollingProductionBuilder()
@@ -871,18 +933,18 @@ class TestLeakageGuards:
         has extreme stats and verify the feature value doesn't reflect them.
         """
         from packages.ml.features.rolling import RollingProductionBuilder
-        from packages.ml.features.scoring import compute_target_batting
 
-        # Create 5 games with consistent stats
-        stats = compute_target_batting(_make_batting_stats(n_games=5))
+        # Create 5 games with consistent stats (daily: June 1-5)
+        stats = _make_batting_stats(n_games=5)
 
         builder = RollingProductionBuilder()
         result = builder.build(stats, as_of_date=date(2024, 6, 30), player_type="hitter")
 
-        # For game 3 (game_pk=100002), the rolling_7d should only include
-        # games 0 and 1 (the two games before it, after shift)
+        # For game 3 (game_pk=100002, June 3), the rolling_7d should only
+        # include games 0 and 1 (June 1, June 2) -- shifted by 1, then
+        # 7-day calendar window covers all prior games within 7 days.
         game2_roll = result[result["game_pk"] == 100002]["roll_h_7d"].values[0]
-        # Games 0 and 1 h values: 1, 2 -> sum = 3
+        # Games 0 and 1 h values: h = 1 + (i % 2) -> 1, 2 -> sum = 3
         expected_h = stats[stats["game_pk"].isin([100000, 100001])]["h"].sum()
         assert game2_roll == pytest.approx(expected_h)
 

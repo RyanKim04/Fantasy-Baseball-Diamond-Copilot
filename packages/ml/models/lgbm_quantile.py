@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 from sklearn.impute import SimpleImputer
 
+from packages.ml.evaluation.metrics import pinball_loss  # single source of truth
+
 logger = logging.getLogger(__name__)
 
 # Quantile levels for the three boosters
@@ -34,27 +36,6 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "n_estimators": 2000,
     "verbose": -1,
 }
-
-
-def pinball_loss(y_true: np.ndarray, y_pred: np.ndarray, alpha: float) -> float:
-    """Compute pinball (quantile) loss.
-
-    Parameters
-    ----------
-    y_true : np.ndarray
-        Actual values.
-    y_pred : np.ndarray
-        Predicted quantile values.
-    alpha : float
-        Quantile level in (0, 1).
-
-    Returns
-    -------
-    float
-        Mean pinball loss.
-    """
-    residual = y_true - y_pred
-    return float(np.mean(np.where(residual >= 0, alpha * residual, (alpha - 1) * residual)))
 
 
 class LGBMQuantileModel:
@@ -84,6 +65,11 @@ class LGBMQuantileModel:
         self._is_fitted: bool = False
         self._feature_names: list[str] = []
         self._best_iterations: dict[float, int] = {}
+
+    @property
+    def is_fitted(self) -> bool:
+        """Whether the model has been fitted."""
+        return self._is_fitted
 
     @property
     def boosters(self) -> dict[float, lgb.LGBMRegressor]:

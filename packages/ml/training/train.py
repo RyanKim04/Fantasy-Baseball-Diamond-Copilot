@@ -20,11 +20,11 @@ import optuna
 import pandas as pd
 
 from packages.ml.models.cqr_aci import CQRACIModel, tune_aci_gamma
+from packages.ml.evaluation.metrics import pinball_loss
 from packages.ml.models.lgbm_quantile import (
     DEFAULT_PARAMS,
     QUANTILE_LEVELS,
     LGBMQuantileModel,
-    pinball_loss,
 )
 from packages.ml.models.ridge import ALPHA_GRID, RidgeProjectionModel
 from packages.ml.training.splits import (
@@ -72,7 +72,7 @@ def _compute_scoring_rules_hash(scoring_rules: ScoringRulesSnapshot) -> str:
 
 def _compute_protocol_hash() -> str:
     """Compute a hash of the validation protocol document."""
-    protocol_path = Path("packages/ml/evaluation/validation_protocol.md")
+    protocol_path = Path(__file__).parent.parent / "evaluation" / "validation_protocol.md"
     if protocol_path.exists():
         return _compute_hash(protocol_path.read_text())
     return "protocol-not-found"
@@ -281,6 +281,7 @@ def train_model(
     scoring_rules: ScoringRulesSnapshot,
     mlflow_experiment_name: str = "phase1-bakeoff",
     n_optuna_trials: int = 50,
+    m2_best_params: dict[str, Any] | None = None,
 ) -> str:
     """Train a single model candidate for a single population.
 
@@ -298,6 +299,10 @@ def train_model(
         MLflow experiment name for grouping runs.
     n_optuna_trials : int
         Number of Optuna trials for hyperparameter search.
+    m2_best_params : dict[str, Any] | None
+        M2's tuned hyperparameters, passed to M3 so it reuses M2's
+        boosters without re-tuning (model_bakeoff.md section 3).
+        Ignored for M1 and M2 candidates.
 
     Returns
     -------
@@ -352,7 +357,7 @@ def train_model(
             _train_m2(df_train, df_val, df_train_val, n_optuna_trials)
 
         elif model_candidate == ModelCandidate.M3_CQR_ACI:
-            _train_m3(df_train, df_val, df_train_val, n_optuna_trials)
+            _train_m3(df_train, df_val, df_train_val, m2_best_params=m2_best_params)
 
         else:
             msg = f"Unknown model candidate: {model_candidate}"
@@ -504,7 +509,7 @@ def _train_m3(
     df_train: pd.DataFrame,
     df_val: pd.DataFrame,
     df_train_val: pd.DataFrame,
-    n_optuna_trials: int,
+    m2_best_params: dict[str, Any] | None = None,
 ) -> CQRACIModel:
     """Train M3 CQR+ACI model. Reuses M2's boosters per model_bakeoff.md section 3.
 
@@ -512,10 +517,26 @@ def _train_m3(
     the base boosters on the fit portion of Train only, keeping the
     calibration set disjoint per validation_protocol.md section 4.
 
+    Parameters
+    ----------
+    df_train : pd.DataFrame
+        Train split.
+    df_val : pd.DataFrame
+        Validation split.
+    df_train_val : pd.DataFrame
+        Combined Train + Validation data.
+    m2_best_params : dict[str, Any] | None
+        M2's tuned hyperparameters. If None (standalone mode), uses
+        DEFAULT_PARAMS as fallback.
+
     Returns the final fitted model.
     """
-    # Tune LGBM hyperparameters (same search as M2 -- reuses M2's budget)
-    best_params = _tune_lgbm(df_train_val, n_trials=n_optuna_trials)
+    # Reuse M2's tuned params; fall back to defaults if M2 was not trained
+    best_params = m2_best_params if m2_best_params is not None else {**DEFAULT_PARAMS}
+    logger.info(
+        "M3 using %s LGBM params",
+        "M2's tuned" if m2_best_params is not None else "default (M2 not trained)",
+    )
 
     # Log tuned params
     for k, v in best_params.items():
@@ -525,17 +546,31 @@ def _train_m3(
     # Split train into fit and calibration portions for CQR
     df_fit, df_cal = get_calibration_split(df_train)
 
-    X_fit, y_fit = _extract_features_and_target(df_fit)
+    # Further split df_fit: last 10% chronologically becomes early-stopping
+    # holdout so that the calibration set stays untouched (H4 fix).
+    df_fit_dates = df_fit["game_date"]
+    sorted_dates = df_fit_dates.sort_values()
+    es_cutoff_idx = int(len(sorted_dates) * 0.90)
+    es_cutoff_date = sorted_dates.iloc[min(es_cutoff_idx, len(sorted_dates) - 1)]
+
+    df_fit_train = df_fit.loc[df_fit_dates <= es_cutoff_date].copy()
+    df_fit_es = df_fit.loc[df_fit_dates > es_cutoff_date].copy()
+
+    X_fit_train, y_fit_train = _extract_features_and_target(df_fit_train)
+    X_fit_es, y_fit_es = _extract_features_and_target(df_fit_es)
     X_cal, y_cal = _extract_features_and_target(df_cal)
     X_val, y_val = _extract_features_and_target(df_val)
 
-    # Train M2 on the fit portion only (calibration set is disjoint)
+    # Use the early-stopping holdout (NOT calibration set) for early stopping
     fit_m2 = LGBMQuantileModel(params=best_params)
-    fit_m2.fit(X_fit, y_fit, X_cal, y_cal)
+    if len(df_fit_es) > 0:
+        fit_m2.fit(X_fit_train, y_fit_train, X_fit_es, y_fit_es)
+    else:
+        fit_m2.fit(X_fit_train, y_fit_train)
 
     # Create M3 using the fit-only M2 as base
     m3_model = CQRACIModel(base_model=fit_m2)
-    m3_model.fit(X_fit, y_fit)
+    m3_model.fit(X_fit_train, y_fit_train)
 
     # Calibrate on the calibration set
     m3_model.calibrate(X_cal, y_cal)
@@ -543,7 +578,8 @@ def _train_m3(
     mlflow.log_params({
         "cqr_adjustment": m3_model.cqr_adjustment,
         "n_calibration_rows": len(df_cal),
-        "n_fit_rows": len(df_fit),
+        "n_fit_train_rows": len(df_fit_train),
+        "n_fit_es_rows": len(df_fit_es),
     })
 
     # Tune ACI gamma on validation data

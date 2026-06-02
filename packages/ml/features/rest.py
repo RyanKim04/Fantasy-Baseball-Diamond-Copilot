@@ -100,8 +100,8 @@ class RestRecencyBuilder:
                 cutoff_7 = d - timedelta(days=7)
                 cutoff_14 = d - timedelta(days=14)
                 prior_dates = dates[:i]  # all games before this one in sorted order
-                c7 = int(np.sum([cutoff_7 < pd <= d for pd in prior_dates]))  # noqa: E741
-                c14 = int(np.sum([cutoff_14 < pd <= d for pd in prior_dates]))  # noqa: E741
+                c7 = int(np.sum([cutoff_7 < d_prior <= d for d_prior in prior_dates]))
+                c14 = int(np.sum([cutoff_14 < d_prior <= d for d_prior in prior_dates]))
                 counts_7.append(c7)
                 counts_14.append(c14)
             g["rest_games_in_last_7d"] = counts_7

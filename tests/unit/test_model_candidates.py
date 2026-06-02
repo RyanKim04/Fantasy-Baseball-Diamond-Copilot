@@ -11,7 +11,8 @@ import pandas as pd
 import pytest
 
 from packages.ml.models.cqr_aci import CQRACIModel, tune_aci_gamma
-from packages.ml.models.lgbm_quantile import LGBMQuantileModel, pinball_loss
+from packages.ml.evaluation.metrics import pinball_loss
+from packages.ml.models.lgbm_quantile import LGBMQuantileModel
 from packages.ml.models.ridge import RidgeProjectionModel
 
 
@@ -284,28 +285,28 @@ class TestPinballLoss:
 
     def test_perfect_prediction(self) -> None:
         y = np.array([1.0, 2.0, 3.0])
-        loss = pinball_loss(y, y, alpha=0.5)
+        loss = pinball_loss(y, y, tau=0.5)
         assert loss == pytest.approx(0.0, abs=1e-10)
 
     def test_positive_residual(self) -> None:
         """When y > pred, loss = alpha * (y - pred)."""
         y = np.array([3.0])
         pred = np.array([1.0])
-        loss = pinball_loss(y, pred, alpha=0.1)
+        loss = pinball_loss(y, pred, tau=0.1)
         assert loss == pytest.approx(0.1 * 2.0)
 
     def test_negative_residual(self) -> None:
         """When y < pred, loss = (1 - alpha) * (pred - y)."""
         y = np.array([1.0])
         pred = np.array([3.0])
-        loss = pinball_loss(y, pred, alpha=0.1)
+        loss = pinball_loss(y, pred, tau=0.1)
         assert loss == pytest.approx(0.9 * 2.0)
 
     def test_symmetric_at_median(self) -> None:
         """At alpha=0.5, pinball loss is symmetric."""
         y = np.array([0.0])
-        loss_above = pinball_loss(y, np.array([-1.0]), alpha=0.5)
-        loss_below = pinball_loss(y, np.array([1.0]), alpha=0.5)
+        loss_above = pinball_loss(y, np.array([-1.0]), tau=0.5)
+        loss_below = pinball_loss(y, np.array([1.0]), tau=0.5)
         assert loss_above == pytest.approx(loss_below)
 
 
@@ -330,7 +331,7 @@ class TestCQRACIModel:
         model.fit(X_train, y_train, X_val, y_val)
 
         assert model.base_model is not None
-        assert model.base_model._is_fitted
+        assert model.base_model.is_fitted
 
     def test_reuses_pretrained_base(
         self,
@@ -569,6 +570,15 @@ class TestProjectionPredict:
     pipeline, which are not available in unit tests. We test the
     predict_batch helper instead.
     """
+
+    def test_predict_raises_not_implemented(self) -> None:
+        """predict() should raise NotImplementedError until Phase 2 feature assembly is wired."""
+        from datetime import date as dt_date
+
+        from packages.ml.models.projection import predict
+
+        with pytest.raises(NotImplementedError, match="Single-player feature assembly"):
+            predict(player_id=12345, target_date=dt_date(2024, 6, 1))
 
     def test_predict_batch_schema(
         self,

@@ -232,6 +232,7 @@ def coverage_drift_over_time(
     upper: np.ndarray,
     dates: np.ndarray,
     n_bins: int = 4,
+    bin_method: str = "weekly",
 ) -> dict[str, list]:
     """Coverage computed in temporal bins across the evaluation period.
 
@@ -248,7 +249,12 @@ def coverage_drift_over_time(
     dates : np.ndarray
         Dates corresponding to each prediction (for binning).
     n_bins : int
-        Number of temporal bins (default 4 per protocol).
+        Number of temporal bins (default 4 per protocol). Only used
+        when ``bin_method="equal_mass"``.
+    bin_method : str
+        ``"weekly"`` (default, per protocol section 9.4) groups by
+        calendar week using ``pd.Grouper(freq='W')``.
+        ``"equal_mass"`` splits into *n_bins* equal-size temporal bins.
 
     Returns
     -------
@@ -265,14 +271,68 @@ def coverage_drift_over_time(
     if len(y_true) == 0:
         raise ValueError("Cannot compute coverage drift with empty arrays")
 
-    # Sort by date
+    if bin_method not in ("weekly", "equal_mass"):
+        raise ValueError(f"bin_method must be 'weekly' or 'equal_mass', got '{bin_method}'")
+
+    if bin_method == "weekly":
+        return _coverage_drift_weekly(y_true, lower, upper, dates)
+    else:
+        return _coverage_drift_equal_mass(y_true, lower, upper, dates, n_bins)
+
+
+def _coverage_drift_weekly(
+    y_true: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    dates,  # pd.DatetimeIndex
+) -> dict[str, list]:
+    """Weekly binning for coverage drift (protocol section 9.4)."""
+    import pandas as pd
+
+    df = pd.DataFrame({
+        "y_true": y_true,
+        "lower": lower,
+        "upper": upper,
+        "game_date": dates,
+    })
+    df["covered"] = (df["y_true"] >= df["lower"]) & (df["y_true"] <= df["upper"])
+
+    grouped = df.groupby(pd.Grouper(key="game_date", freq="W"))
+
+    bin_labels: list[str] = []
+    coverages: list[float] = []
+    n_samples_list: list[int] = []
+
+    for week_end, group in grouped:
+        if len(group) == 0:
+            continue
+        start_date = group["game_date"].min().strftime("%Y-%m-%d")
+        end_date = group["game_date"].max().strftime("%Y-%m-%d")
+        bin_labels.append(f"{start_date} to {end_date}")
+        coverages.append(float(group["covered"].mean()))
+        n_samples_list.append(len(group))
+
+    return {
+        "bin_labels": bin_labels,
+        "coverage": coverages,
+        "n_samples": n_samples_list,
+    }
+
+
+def _coverage_drift_equal_mass(
+    y_true: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    dates,  # pd.DatetimeIndex
+    n_bins: int,
+) -> dict[str, list]:
+    """Equal-mass temporal binning for coverage drift."""
     sort_idx = np.argsort(dates)
     y_true_sorted = y_true[sort_idx]
     lower_sorted = lower[sort_idx]
     upper_sorted = upper[sort_idx]
     dates_sorted = dates[sort_idx]
 
-    # Split into n_bins temporal bins of roughly equal size
     bin_size = len(y_true) // n_bins
     remainder = len(y_true) % n_bins
 
